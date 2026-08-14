@@ -1,0 +1,119 @@
+:root {
+  color: #20242a;
+  background: #f4f7f9;
+  --ink: #20242a;
+  --muted: #6f7780;
+  --line: #dfe4e7;
+  --soft: #f3f6f8;
+}
+
+html,
+body,
+#app,
+.app {
+  background: #f4f7f9;
+}
+
+.global-header {
+  background: #fff;
+}
+
+.brand small {
+  color: #7b858e;
+}
+
+.collection-page {
+  padding-top: 18px;
+}
+
+.page-title.actions-only {
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.demo-btn {
+  border-color: #dfe4e7;
+  background: #fff;
+}
+
+.import-band {
+  background: linear-gradient(100deg, #f7fbfc 0%, #fff 55%, #eef7f5 100%);
+}
+
+.import-row textarea,
+.import-row input,
+.import-row select,
+.settings-modal input,
+.settings-modal select,
+.book-form input,
+.style-settings select,
+.style-settings textarea {
+  border-color: #d7dee2;
+}
+
+.filters {
+  background: #f7f9fa;
+}
+
+.segmented,
+.candidate-tabs {
+  background: #eef1f3;
+}
+
+th {
+  background: #f2f5f7;
+  color: #68727b;
+}
+
+th,
+td,
+.audio-segments > div,
+.log-block > div {
+  border-bottom-color: #edf0f2;
+}
+
+tbody tr:hover {
+  background: #f7fafb;
+}
+
+.task-status {
+  background: #edf0f2;
+  color: #606970;
+}
+
+.step-sidebar {
+  background: #f3f6f8;
+}
+
+.step-number,
+.progress-strip button > span {
+  background: #e6ebed;
+  color: #6f7980;
+}
+
+.progress-strip {
+  background: #fff;
+}
+
+.step-intro {
+  border-color: #d9e3e6;
+  background: linear-gradient(100deg, #f7fafb, #eef7f5);
+}
+
+.editor-box textarea {
+  background: #fff;
+}
+
+.title-preview {
+  background: #f5f8fa;
+}
+
+.modal-scrim {
+  background: rgba(22, 28, 32, 0.48);
+}
+
+@media (max-width: 760px) {
+  .page-title.actions-only {
+    align-items: flex-end;
+  }
+}

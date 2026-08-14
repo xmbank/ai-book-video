@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-book-video-workbench"
+version = "0.1.0"
+description = "P0 vertical slice for a Douyin-to-captioned-video workbench"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "pillow>=11,<13",
+  "requests>=2.31.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+  "zhconv>=1.4.3,<2"
+]
+
+[project.optional-dependencies]
+media = ["faster-whisper>=1.0.3,<2"]
+dev = ["httpx>=0.28,<1", "pytest>=8,<9"]
+
+[project.scripts]
+book-video = "book_video_workbench.cli:main"
+book-video-web = "book_video_workbench.web:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/book_video_workbench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

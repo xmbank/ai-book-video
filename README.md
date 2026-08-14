@@ -1,38 +1,130 @@
-### 3 分钟了解如何进入开发
+# AI 图书带货视频生产系统
 
-欢迎使用云效代码管理 Codeup，通过阅读以下内容，你可以快速熟悉 Codeup ，并立即开始今天的工作。
+这是按《加入生财不到一年，我的视频号图书带货 23 天 5 万佣金的复盘》中展示的生产方法实现的本地 Web 工作台。它不是网页版剪映，也不是通用视频任务面板；首页是热点采集表，一条素材进入任务后，所有逐字稿、候选稿、音频、字幕、场景图、书籍信息和成片都归档在同一任务下，可查看、修改、保留版本和局部重跑。
 
-### 提交**文件**
+当前本机已经用离线任务跑通八个阶段，并生成两种风格的 1080×1920 H.264/AAC 成片。真实抖音任务还需要在页面设置中配置 LLM、图片生成和火山 TTS 凭证。
 
-Codeup 支持两种方式进行代码提交：网页端提交，以及本地 Git 客户端提交。
+## 文章对应流程
 
-* 如需体验本地命令行操作，请先安装 Git 工具，安装方法参见[安装Git](https://help.aliyun.com/document_detail/153800.html)。
+```text
+热点采集表 / 粘贴抖音分享链接
+  -> 1. 逐字稿修复：ASR 修错、删除博主痕迹和营销噪声、合规扫描
+  -> 2. 钩子与候选稿：保留已验证爆点，生成 3 个轻改写候选
+  -> 3. 分段音频：长稿按约 24-28 秒切段，逐段 TTS 后合并
+  -> 4. AI 场景图：按文案生成场景描述，生成 3x3 九宫格并自动拆图
+  -> 5. 书籍信息：识别真实书名与作者，置信度低于 0.6 时人工确认
+  -> 6. 成片风格与数量：选择多种视觉风格及每种生成数量
+  -> 7. 批量成片：HyperFrames 合成字幕、书名/作者和健康声明
+  -> 8. 日志 / 人工确认：查看合规、书籍识别和输出验收结果
+```
 
-* 如需体验 SSH 方式克隆和提交代码，请先在平台账号内配置 SSH 公钥，配置方法参见[配置 SSH 密钥](https://help.aliyun.com/document_detail/153709.html)。
+约十分钟口播可选择 63 张场景图；较短测试任务可选择 9 或 18 张。健康内容的场景提示词强制使用阅读、散步、运动、厨房和家庭日常等生活隐喻，避免器官、病床、手术、药物等医疗病理画面。
 
-* 如需体验 HTTP 方式克隆和提交代码，请先在平台账号内配置克隆账密，配置方法参见[配置 HTTPS 克隆账号密码](https://help.aliyun.com/document_detail/153710.html)。
+真实链路的逐字稿清洗、口播改写、书名作者识别、配图生成和 TTS 拆段，统一使用《加入生财不到一年，我的视频号图书带货23天5万佣金的复盘》“十二、附件”A、B、D、E、F 的原始提示词。每次实际发送的 System/User 提示词、版本和来源都会随对应任务产物保存，便于复核；附件 E 原稿缺失的九宫格第 1、2 项仅补齐了必要变量占位，其余措辞保持原文。
 
-现在，你可以在 Codeup 中提交代码文件了，跟着文档「[__提交第一行代码__](https://help.aliyun.com/document_detail/153707.html?spm=a2c4g.153710.0.0.3c213774PFSMIV#6a5dbb1063ai5)」一起操作试试看吧。
+## 启动工作台
 
-<img src="https://img.alicdn.com/imgextra/i3/O1CN013zHrNR1oXgGu8ccvY_!!6000000005235-0-tps-2866-1268.jpg" width="100%" />
+```bash
+cd /Users/CC/experiment/202607/ai-book-video-workbench
+./start.sh
+```
 
+脚本会自动构建过期的前端文件并查找可用端口。当前机器的 `8765` 已被另一项服务使用，所以本工作台运行在 [http://127.0.0.1:8766](http://127.0.0.1:8766)。也可以显式指定：
 
-### 进行代码检测
+```bash
+WORKBENCH_PORT=8770 ./start.sh
+```
 
-开发过程中，为了更好的维护你的代码质量，你可以开启 Codeup 内置开箱即用的「[代码检测服务](https://help.aliyun.com/document_detail/434321.html)」，开启后提交或合并请求的变更将自动触发检测，识别代码编写规范和安全漏洞问题，并及时提供结果报表和修复建议。
+首页支持粘贴抖音分享链接、主题关键词和场景图数量。采集结果表显示来源标题、作者、时长、点赞、评论、分享和任务状态；点击“制作任务”进入八步详情。
 
-<img src="https://img.alicdn.com/imgextra/i2/O1CN01BRzI1I1IO0CR2i4Aw_!!6000000000882-0-tps-2862-1362.jpg" width="100%" />
+## 页面能力
 
-### 开展代码评审
+- 逐字稿：原始稿和修复稿对照编辑，保存后只使下游阶段过期。
+- 改写：比较三个钩子/候选稿，选择后仍可继续修改。
+- 配音：查看分段计划、试听合并音频和分段产物。
+- 场景图：查看九宫格总图、拆分后的竖版图片和对应文案。
+- 书籍信息：查看识别证据、置信度并人工确认书名/作者。
+- 风格：四种预设分别设置输出数量，单种最多 5 条。
+- 成片：预览、下载每种风格的 MP4，并保留历史版本。
+- 复核：查看书籍、场景图、合规和媒体规格检查结果。
 
-功能开发完毕后，通常你需要发起「[代码评审并执行合并](https://help.aliyun.com/document_detail/153872.html)」，Codeup 支持多人协作的代码评审服务，你可以通过「[保护分支设置合并规则](https://help.aliyun.com/document_detail/153873.html?spm=a2c4g.203108.0.0.430765d1l9tTRR#p-4on-aep-l5q)」策略及「[__合并请求设置__](https://help.aliyun.com/document_detail/153874.html?spm=a2c4g.153871.0.0.3d38686cJpcdJI)」对合并过程进行流程化管控，同时提供在线代码评审及冲突解决能力，让评审过程更加流畅。
+内置风格为 `clean-narration`、`typewriter-dark`、`dark-knowledge` 和 `book-broadcast`。
 
-<img src="https://img.alicdn.com/imgextra/i1/O1CN01MaBDFH1WWcGnQqMHy_!!6000000002796-0-tps-2592-1336.jpg" width="100%" />
+## 离线验收
 
-### 成员协作
+不配置外部服务也可以生成文章流程样片：
 
-是时候邀请成员一起编写卓越的代码工程了，请点击左下角「成员」邀请你的小伙伴开始协作吧！
+```bash
+uv run book-video demo
+```
 
-### 更多
+离线模式使用内置逐字稿、macOS 系统语音，并从文章自带的参考成片提取画面来验证九宫格、拆图、字幕和渲染链路。它不会调用真实 LLM、图片模型或火山 TTS，不代表这些 Provider 已通过账户级验收。
 
-Git 使用教学、高级功能指引等更多说明，参见[Codeup帮助文档](https://help.aliyun.com/document_detail/153402.html)。
+当前已完成任务：
+
+```text
+data/tasks/20260715-76d1860fe6/
+```
+
+任务中已有 3 个改写候选、4 段 TTS、2 张九宫格、18 张场景图和两种风格的成片。当前活动输出可直接在网页的“批量成片”阶段播放和下载。
+
+## 真实链路配置
+
+先复制配置文件并在页面“设置”或 `.env` 中填写真实参数：
+
+```bash
+cp .env.example .env
+uv run book-video doctor
+```
+
+必须配置：
+
+- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL`：OpenAI-compatible Chat Completions，用于修复、轻改写和书籍识别。
+- `IMAGE_API_KEY`、`IMAGE_MODEL`、`IMAGE_BASE_URL`、`IMAGE_SIZE`：OpenAI-compatible Images Generations，用于生成九宫格场景图。
+- `VOLC_TTS_API_KEY`、`VOLC_TTS_RESOURCE_ID`、`VOLC_TTS_VOICE_TYPE`：豆包语音合成模型 2.0。`API Key` 在新版豆包语音控制台的“API Key 管理”中获取；资源 ID 默认为 `seed-tts-2.0`。
+
+配置后，网页中只需粘贴一段有效抖音分享链接即可创建真实任务；书名和作者可以留空，由系统识别。命令行等价入口：
+
+```bash
+uv run book-video run \
+  --share "抖音完整分享文案或链接" \
+  --keyword "健康图书" \
+  --scene-count 63
+```
+
+首次真实验收需要一条实际图书视频链接和可用的三类 Provider 凭证。抖音页面结构、账号权限和图片模型支持的尺寸可能变化，失败会记录在对应阶段并允许从该阶段重跑。
+
+## 任务持久化
+
+```text
+data/tasks/{task-id}/
+├── task.json                  # 任务配置与活动版本指针
+├── pipeline-state.json        # 八阶段状态、错误和产物
+├── artifacts.json             # 文件大小、SHA-256 和所属阶段
+├── source/                    # 抖音元数据与原视频
+├── transcript/                # 原始稿与修复稿版本
+├── scripts/                   # 三候选和最终稿版本
+├── tts/                       # 分段音频、合并音频和计划
+├── subtitles/                 # JSON/SRT 字幕版本
+├── scene-images/              # 九宫格、拆分图和场景描述
+├── book/                      # 书名/作者识别与人工确认版本
+├── styles/                    # 风格和每种输出数量
+├── output-plans/              # 每种风格的分镜与渲染清单
+├── render-project-*/          # HyperFrames 工程
+├── renders/                   # MP4 和 ffprobe 验收报告
+└── review/                    # 最终人工复核报告
+```
+
+旧版本不会被覆盖。编辑逐字稿、最终稿、书籍信息、字幕或风格后，系统只把受影响的下游阶段标为待重跑。
+
+## 开发验收
+
+```bash
+uv run python -m compileall -q src tests
+uv run pytest -q
+npm run build
+```
+
+当前基线为 `18 passed`；前端生产构建通过。离线成片已验证为 H.264/AAC、1080×1920、30fps，并完成桌面和 390px 手机视口截图检查。
+
+当前不包含自动登录抖音浏览榜单、自动发布到视频号/抖音、佣金归因和多人权限。第一版的热点判断仍由人完成，系统负责把选中的链接变成可追溯、可批量重跑的成片任务。

@@ -1,0 +1,23 @@
+{
+  "name": "ai-book-video-workbench-renderer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned local rendering dependencies for the AI book video workbench",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "hf:doctor": "hyperframes doctor",
+    "hf:info": "hyperframes info"
+  },
+  "dependencies": {
+    "gsap": "3.14.2",
+    "@lucide/vue": "1.24.0",
+    "hyperframes": "0.7.56",
+    "vue": "3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "5.2.1",
+    "typescript": "5.7.2",
+    "vite": "6.4.3"
+  }
+}
