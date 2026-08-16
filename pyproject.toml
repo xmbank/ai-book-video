@@ -9,6 +9,7 @@ description = "P0 vertical slice for a Douyin-to-captioned-video workbench"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+  "f2==0.0.1.7",
   "fastapi>=0.116,<1",
   "pillow>=11,<13",
   "requests>=2.31.0,<3",
@@ -18,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 media = ["faster-whisper>=1.0.3,<2"]
-dev = ["httpx>=0.28,<1", "pytest>=8,<9"]
+dev = ["httpx>=0.27,<1", "pytest>=8,<9"]
 
 [project.scripts]
 book-video = "book_video_workbench.cli:main"

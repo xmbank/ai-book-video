@@ -101,6 +101,50 @@ def test_article_flow_edit_endpoints_version_and_invalidate(tmp_path: Path, monk
     assert options["style_counts"]["typewriter-dark"] == 2
 
 
+def test_book_update_persists_product_inputs_and_invalidates_rewrite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "settings", _settings(tmp_path))
+    task_dir = create_task(web.settings, RunOptions(mode="demo", share_text=""))
+    cover = tmp_path / "real-cover.jpg"
+    cover.write_bytes(b"real cover fixture")
+    state_path = task_dir / "pipeline-state.json"
+    state = read_json(state_path)
+    for name in ("rewrite", "audio", "scene_images", "styles", "outputs", "review"):
+        state["stages"][name]["status"] = "succeeded"
+    write_json(state_path, state)
+
+    response = TestClient(web.app).patch(
+        f"/api/tasks/{task_dir.name}/book",
+        json={
+            "book_title": "黄帝内经",
+            "book_author": "人民卫生出版社整理版",
+            "confidence": 1,
+            "selling_points": ["白话注释", "原文与译文对照"],
+            "book_cover": str(cover),
+            "rewrite_mode": "deep",
+            "target_seconds": 45,
+        },
+    )
+
+    assert response.status_code == 200
+    book = response.json()["book_info"]
+    assert book["selling_points"] == ["白话注释", "原文与译文对照"]
+    assert book["book_cover"] == str(cover.resolve())
+    assert book["product_ready"] is True
+    options = read_json(task_dir / "task.json")["options"]
+    assert options["selling_points"] == ["白话注释", "原文与译文对照"]
+    assert options["book_cover"] == str(cover.resolve())
+    assert options["rewrite_mode"] == "deep"
+    assert options["target_seconds"] == 45
+    persisted_state = read_json(state_path)["stages"]
+    assert persisted_state["book_info"]["status"] == "succeeded"
+    assert all(
+        persisted_state[name]["status"] == "stale"
+        for name in ("rewrite", "audio", "scene_images", "styles", "outputs", "review")
+    )
+
+
 def test_style_stage_expands_per_style_output_counts(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     task_dir = create_task(

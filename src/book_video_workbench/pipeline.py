@@ -45,7 +45,8 @@ class RunOptions:
     allow_source_video: bool = False
     keyword: str = "图书带货"
     book_author: str = ""
-    rewrite_notes: str = "保留原稿爆点和叙事节奏，只做轻量改写"
+    rewrite_mode: str = "medium"
+    rewrite_notes: str = "保留可核实事实，重组叙事角度、信息顺序和表达，避免同义词式洗稿"
     scene_count: int = 18
     styles: list[str] = field(default_factory=lambda: ["clean-narration"])
     style_counts: dict[str, int] = field(default_factory=lambda: {"clean-narration": 1})
@@ -176,6 +177,7 @@ class Pipeline:
         with self.state.running("rewrite") as outputs:
             meta = read_json(self.task_dir / "source" / "meta.normalized.json")
             repaired = read_json(self._active("repaired_transcript"))
+            book = read_json(self._active("book_info"))
             candidates = rewrite_candidates(
                 repaired["cleaned_text"],
                 keyword=self.options.keyword,
@@ -184,9 +186,18 @@ class Pipeline:
                 notes=self.options.rewrite_notes,
                 settings=self.settings,
                 output_path=self._next_version("scripts", "candidates-v", ".json"),
+                book_title=book.get("book_title") or self.options.book_title,
+                book_author=book.get("book_author") or self.options.book_author,
+                selling_points=book.get("selling_points") or self.options.selling_points,
+                target_seconds=self.options.target_seconds,
+                rewrite_mode=self.options.rewrite_mode,
                 demo=self.options.mode == "demo",
             )
-            candidate = read_json(candidates)["candidates"][0]
+            candidate_data = read_json(candidates)
+            candidate = max(
+                candidate_data["candidates"],
+                key=lambda item: item.get("quality", {}).get("overall_score", 0),
+            )
             selected = write_json(
                 self._next_version("scripts", "selected-v", ".json"),
                 {
@@ -195,6 +206,8 @@ class Pipeline:
                     "label": candidate["label"],
                     "hook": candidate["hook"],
                     "script": candidate["script"],
+                    "quality": candidate.get("quality", {}),
+                    "selection_reason": "自动采用综合质量评分最高的候选",
                     "selected_at": utc_now(),
                 },
             )
@@ -257,27 +270,32 @@ class Pipeline:
     def _stage_scene_images(self) -> None:
         with self.state.running("scene_images") as outputs:
             selected = read_json(self._active("selected_script"))
+            book = read_json(self._active("book_info"))
             version_path = self._next_version("scene-images", "manifest-v", ".json")
             version = int(version_path.stem.replace("manifest-v", ""))
-            manifest, grids, scenes = generate_scene_images(
+            manifest, contact_sheets, scenes = generate_scene_images(
                 selected["script"],
                 count=self.options.scene_count,
                 task_dir=self.task_dir,
                 version=version,
                 settings=self.settings,
                 demo=self.options.mode == "demo",
+                book_title=book.get("book_title") or self.options.book_title,
+                book_author=book.get("book_author") or self.options.book_author,
+                selling_points=book.get("selling_points") or self.options.selling_points,
+                book_cover=self.options.book_cover,
             )
             # Keep a stable version pointer alongside the generated directory manifest.
             write_json(version_path, read_json(manifest))
             self._activate(scene_manifest=manifest, scene_version_manifest=version_path)
-            outputs.extend([manifest, version_path, *grids, *scenes])
+            outputs.extend([manifest, version_path, *contact_sheets, *scenes])
 
     def _stage_book_info(self) -> None:
         with self.state.running("book_info") as outputs:
             meta = read_json(self.task_dir / "source" / "meta.normalized.json")
-            selected = read_json(self._active("selected_script"))
+            repaired = read_json(self._active("repaired_transcript"))
             book = identify_book(
-                selected["script"],
+                repaired["cleaned_text"],
                 existing_title=self.options.book_title,
                 existing_author=self.options.book_author,
                 keyword=self.options.keyword,
@@ -285,6 +303,8 @@ class Pipeline:
                 source_description=meta.get("description", ""),
                 settings=self.settings,
                 output_path=self._next_version("book", "identity-v", ".json"),
+                selling_points=self.options.selling_points,
+                book_cover=self.options.book_cover,
                 demo=self.options.mode == "demo",
             )
             self._activate(book_info=book)
@@ -389,15 +409,35 @@ class Pipeline:
     def _stage_review(self) -> None:
         with self.state.running("review") as outputs:
             book = read_json(self._active("book_info"))
+            candidates = read_json(self._active("rewrite_candidates"))
+            scene_manifest = read_json(self._active("scene_manifest"))
             output_index = read_json(self._active("output_index"))
+            selected_id = read_json(self._active("selected_script")).get("candidate_id")
+            selected_candidate = next(
+                (
+                    item
+                    for item in candidates.get("candidates", [])
+                    if item.get("id") == selected_id
+                ),
+                {},
+            )
+            scene_quality = scene_manifest.get("quality", {})
+            needs_review = bool(
+                book.get("needs_review")
+                or book.get("asset_warnings")
+                or selected_candidate.get("findings")
+                or scene_quality.get("status") == "needs_review"
+            )
             review = write_json(
                 self._next_version("review", "v", ".json"),
                 {
                     "schema_version": 1,
-                    "status": "needs_review" if book.get("needs_review") else "ready",
+                    "status": "needs_review" if needs_review else "ready",
                     "checks": {
                         "book_identity": "needs_review" if book.get("needs_review") else "passed",
-                        "scene_images": "passed",
+                        "product_assets": "needs_review" if book.get("asset_warnings") else "passed",
+                        "copy_quality": selected_candidate.get("quality", {}).get("overall_score", "needs_review"),
+                        "scene_images": scene_quality.get("status", "needs_review"),
                         "compliance": "manual_confirmation_recommended",
                         "outputs": len(output_index["outputs"]),
                     },

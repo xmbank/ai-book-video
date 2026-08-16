@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -92,6 +94,76 @@ def fetch_share_page(
     raise RuntimeError("DOUYIN_SHARE_FETCH_FAILED\n" + "\n".join(errors))
 
 
+def _browser_cookie() -> str:
+    """Load a Douyin session without persisting or logging browser cookies."""
+    configured = os.environ.get("DOUYIN_COOKIE", "").strip()
+    if configured:
+        return configured
+
+    try:
+        import browser_cookie3
+
+        jar = browser_cookie3.chrome(domain_name=".douyin.com")
+    except Exception as exc:
+        raise RuntimeError("DOUYIN_DETAIL_COOKIE_UNAVAILABLE") from exc
+
+    values = [f"{cookie.name}={cookie.value}" for cookie in jar]
+    if not values:
+        raise RuntimeError("DOUYIN_DETAIL_COOKIE_UNAVAILABLE")
+    return "; ".join(values)
+
+
+def _fetch_detail_item(aweme_id: str) -> dict:
+    """Use the signed detail API when the public share page omits item data."""
+    cookie = _browser_cookie()
+    previous_cwd = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="book-video-douyin-api-") as directory:
+        try:
+            # F2 initializes a relative log directory on import. Keep those
+            # implementation logs ephemeral and out of the project workspace.
+            os.chdir(directory)
+            from f2.apps.douyin.crawler import DouyinCrawler
+            from f2.apps.douyin.model import PostDetail
+            from f2.apps.douyin.utils import ClientConfManager
+
+            async def fetch() -> dict:
+                kwargs = {
+                    "cookie": cookie,
+                    "headers": dict(ClientConfManager.headers()),
+                    "proxies": {"http://": None, "https://": None},
+                    "timeout": 20,
+                    "max_retries": 2,
+                    "max_connections": 5,
+                    "max_tasks": 5,
+                }
+                async with DouyinCrawler(kwargs) as crawler:
+                    return await crawler.fetch_post_detail(PostDetail(aweme_id=aweme_id))
+
+            payload = asyncio.run(fetch())
+        finally:
+            os.chdir(previous_cwd)
+    item = payload.get("aweme_detail") if isinstance(payload, dict) else None
+    if not isinstance(item, dict) or not item.get("aweme_id"):
+        raise RuntimeError("DOUYIN_DETAIL_API_EMPTY")
+    return item
+
+
+def _resolve_item(d, html: str, page_url: str) -> dict:
+    for parser in (d._parse_router_data, d._parse_render_data):
+        payload = parser(html)
+        if payload:
+            items = d._find_item_list(payload)
+            if items:
+                return items[0]
+
+    aweme_id = d.extract_aweme_id(page_url, html)
+    try:
+        return _fetch_detail_item(aweme_id)
+    except Exception as exc:
+        marker = str(exc) or type(exc).__name__
+        raise RuntimeError(f"DOUYIN_DETAIL_FALLBACK_FAILED: {marker}") from exc
+
+
 def resolve_metadata(backend_dir: Path, share_text: str) -> dict:
     sys.path.insert(0, str(backend_dir))
     import script.douyin_resolver as d
@@ -99,22 +171,12 @@ def resolve_metadata(backend_dir: Path, share_text: str) -> dict:
     session = d._session()
     share_url = d.expand_share_url(share_text)
     fetch_url = d.normalize_to_share_page(share_url)
-    _, html = fetch_share_page(
+    page_url, html = fetch_share_page(
         session,
         fetch_url,
         user_agent=d.SHARE_PAGE_UA,
     )
-
-    item = None
-    for parser in (d._parse_router_data, d._parse_render_data):
-        payload = parser(html)
-        if payload:
-            items = d._find_item_list(payload)
-            if items:
-                item = items[0]
-                break
-    if item is None:
-        raise RuntimeError("分享页未找到作品数据")
+    item = _resolve_item(d, html, page_url)
 
     meta = asdict(d._meta_from_aweme_item(item, share_url))
     stats = item.get("statistics") or {}

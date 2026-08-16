@@ -76,7 +76,11 @@ def generate_project(
                 'playsinline preload="auto"></video><div class="media-shade"></div>'
             )
         cover = ""
-        if cover_name:
+        cover_roles = {"product_space", "product_reveal", "product_detail", "closing"}
+        if cover_name and (
+            scene.get("shot_role") in cover_roles
+            or len(scenes_html) == len(manifest["scenes"]) - 1
+        ):
             cover = f'<img class="book-cover" src="assets/{html.escape(cover_name)}" alt="">'
         headline_size = 66 if len(scene["headline"]) > 8 else 74
         headline_class = " headline-key" if len(scenes_html) in {0, len(manifest["scenes"]) - 1} else " headline-hidden"

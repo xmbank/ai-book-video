@@ -37,11 +37,56 @@ def test_legacy_pipeline_state_migrates_to_article_stages(tmp_path: Path) -> Non
     )
     state = PipelineState(tmp_path)
     assert list(state.data["stages"]) == [
-        "repair", "rewrite", "audio", "scene_images", "book_info", "styles", "outputs", "review"
+        "repair", "book_info", "rewrite", "audio", "scene_images", "styles", "outputs", "review"
     ]
     assert state.data["stages"]["repair"]["status"] == "succeeded"
     assert state.data["stages"]["scene_images"]["status"] == "stale"
     assert "legacy_stages" in state.data
+
+
+def test_existing_article_state_is_reordered_without_losing_records(tmp_path: Path) -> None:
+    old_order = [
+        "repair",
+        "rewrite",
+        "audio",
+        "scene_images",
+        "book_info",
+        "styles",
+        "outputs",
+        "review",
+    ]
+    write_json(
+        tmp_path / "pipeline-state.json",
+        {
+            "schema_version": 2,
+            "stages": {
+                name: {
+                    "status": "succeeded",
+                    "artifacts": [f"artifacts/{name}.json"],
+                    "message": f"保留 {name}",
+                }
+                for name in old_order
+            },
+        },
+    )
+
+    state = PipelineState(tmp_path)
+
+    assert list(state.data["stages"]) == [
+        "repair",
+        "book_info",
+        "rewrite",
+        "audio",
+        "scene_images",
+        "styles",
+        "outputs",
+        "review",
+    ]
+    assert state.data["schema_version"] == 3
+    assert state.data["stages"]["book_info"]["artifacts"] == [
+        "artifacts/book_info.json"
+    ]
+    assert state.data["stages"]["rewrite"]["message"] == "保留 rewrite"
 
 
 def test_stage_failure_keeps_diagnostics_but_stores_public_message(tmp_path: Path) -> None:
@@ -58,3 +103,20 @@ def test_stage_failure_keeps_diagnostics_but_stores_public_message(tmp_path: Pat
     assert failed["error"]["retryable"] is True
     assert failed["error"]["technical_message"] == technical
     assert "RuntimeError" in failed["error"]["traceback"]
+
+
+def test_image_disconnect_uses_image_specific_public_message(tmp_path: Path) -> None:
+    state = PipelineState(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        with state.running("scene_images"):
+            raise RuntimeError(
+                "IMAGE_GENERATION_TRANSIENT_ERROR: 图片生成连接连续中断"
+            )
+
+    failed = state.data["stages"]["scene_images"]
+    assert failed["message"] == (
+        "图片生成服务连接暂时中断，系统已自动重试。"
+        "已生成的竖屏图会保留，请稍后点击“重试”继续。"
+    )
+    assert failed["error"]["retryable"] is True

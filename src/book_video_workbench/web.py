@@ -46,7 +46,8 @@ class TaskCreate(BaseModel):
     book_cover: str | None = None
     allow_source_video: bool = False
     keyword: str = "图书带货"
-    rewrite_notes: str = "保留原稿爆点和叙事节奏，只做轻量改写"
+    rewrite_mode: Literal["light", "medium", "deep"] = "medium"
+    rewrite_notes: str = "保留可核实事实，重组叙事角度、信息顺序和表达，避免同义词式洗稿"
     scene_count: int = Field(default=18)
     styles: list[str] = Field(default_factory=lambda: ["clean-narration"])
     style_counts: dict[str, int] = Field(default_factory=lambda: {"clean-narration": 1})
@@ -65,13 +66,17 @@ class BookUpdate(BaseModel):
     book_title: str = Field(min_length=1)
     book_author: str = ""
     confidence: float = Field(default=1.0, ge=0, le=1)
+    selling_points: list[str] = Field(default_factory=list)
+    book_cover: str | None = None
+    rewrite_mode: Literal["light", "medium", "deep"] = "medium"
+    target_seconds: int | None = Field(default=None, ge=10, le=1200)
 
 
 class StyleUpdate(BaseModel):
     styles: list[str]
     style_counts: dict[str, int] = Field(default_factory=dict)
     declaration: str
-    scene_count: int = Field(ge=9, le=63)
+    scene_count: int = Field(ge=6, le=63)
 
 
 class SubtitleItem(BaseModel):
@@ -195,7 +200,7 @@ def _task_summary(task_dir: Path, *, detail: bool = False) -> dict:
     if detail:
         scene_manifest = _artifact_value(task_dir, task, "scene_manifest")
         if scene_manifest:
-            for key in ("grids", "scenes"):
+            for key in ("grids", "contact_sheets", "scenes"):
                 urls = []
                 for value in scene_manifest.get(key) or []:
                     path = Path(value)
@@ -298,8 +303,8 @@ def list_tasks() -> list[dict]:
 def create_web_task(value: TaskCreate) -> dict:
     if value.mode == "real" and not value.share_text.strip():
         raise HTTPException(422, "真实任务需要抖音分享链接")
-    if value.scene_count not in {9, 18, 27, 36, 45, 54, 63}:
-        raise HTTPException(422, "场景图数量必须是 9 到 63 的九的倍数")
+    if not 6 <= value.scene_count <= 63:
+        raise HTTPException(422, "场景图数量必须在 6 到 63 之间")
     task_dir = create_task(settings, RunOptions(**value.model_dump()))
     _submit(task_dir)
     return _task_summary(task_dir, detail=True)
@@ -359,13 +364,20 @@ def update_repair(task_id: str, value: RepairUpdate) -> dict:
     )
     _activate(task_dir, "repaired_transcript", output)
     _record_manual(task_dir, "repair", [output])
-    PipelineState(task_dir).invalidate_from("rewrite")
+    PipelineState(task_dir).invalidate_from("book_info")
     return _task_summary(task_dir, detail=True)
 
 
 @app.patch("/api/tasks/{task_id}/book")
 def update_book(task_id: str, value: BookUpdate) -> dict:
     task_dir = _task_dir(task_id)
+    selling_points = [item.strip() for item in value.selling_points if item.strip()]
+    cover_value = (value.book_cover or "").strip()
+    if cover_value:
+        cover = Path(cover_value).expanduser().resolve()
+        if not cover.is_file():
+            raise HTTPException(422, "真实封面路径不存在")
+        cover_value = str(cover)
     output = _next_version(task_dir, "book", "identity-v", ".json")
     write_json(
         output,
@@ -376,12 +388,31 @@ def update_book(task_id: str, value: BookUpdate) -> dict:
             "confidence": value.confidence,
             "evidence": "用户在工作台确认",
             "needs_review": False,
+            "selling_points": selling_points,
+            "book_cover": cover_value,
+            "asset_warnings": (
+                ([] if selling_points else ["尚未填写已确认商品卖点，二创只能聚焦阅读价值"])
+                + ([] if cover_value else ["尚未提供真实封面，系统不会让图片模型虚构封面"])
+                + ([] if value.book_author.strip() else ["作者或具体版本尚未确认"])
+            ),
+            "product_ready": bool(selling_points),
             "confirmed_at": utc_now(),
         },
     )
+    task_path = task_dir / "task.json"
+    task = read_json(task_path)
+    task["options"]["book_title"] = value.book_title.strip()
+    task["options"]["book_author"] = value.book_author.strip()
+    task["options"]["selling_points"] = selling_points
+    task["options"]["book_cover"] = cover_value or None
+    task["options"]["rewrite_mode"] = value.rewrite_mode
+    if value.target_seconds is not None:
+        task["options"]["target_seconds"] = value.target_seconds
+    task["updated_at"] = utc_now()
+    write_json(task_path, task)
     _activate(task_dir, "book_info", output)
     _record_manual(task_dir, "book_info", [output])
-    PipelineState(task_dir).invalidate_from("styles")
+    PipelineState(task_dir).invalidate_from("rewrite")
     return _task_summary(task_dir, detail=True)
 
 
@@ -393,11 +424,14 @@ def update_styles(task_id: str, value: StyleUpdate) -> dict:
     task["options"]["styles"] = value.styles
     task["options"]["style_counts"] = value.style_counts
     task["options"]["declaration"] = value.declaration
+    previous_scene_count = int(task["options"].get("scene_count") or 18)
     task["options"]["scene_count"] = value.scene_count
     task["updated_at"] = utc_now()
     write_json(task_path, task)
     state = PipelineState(task_dir)
-    state.invalidate_from("styles" if state.stage_complete("scene_images") else "scene_images")
+    state.invalidate_from(
+        "scene_images" if previous_scene_count != value.scene_count else "styles"
+    )
     return _task_summary(task_dir, detail=True)
 
 

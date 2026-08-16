@@ -39,13 +39,16 @@ def build_storyboard(
     for index in range(scene_count):
         start = boundaries[index]
         end = boundaries[index + 1]
+        brief = (scene_briefs or [{}])[index % max(1, len(scene_briefs or [{}]))]
         scenes.append(
             {
                 "id": f"scene-{index + 1}",
                 "start": start,
                 "duration": round(end - start, 3),
                 "headline": labels[index % len(labels)],
-                "script_text": (scene_briefs or [{}])[index % max(1, len(scene_briefs or [{}]))].get("script_text", ""),
+                "script_text": brief.get("script_text", ""),
+                "shot_role": brief.get("shot_role", "editorial_symbol"),
+                "visual_purpose": brief.get("visual_purpose", "推进图书知识叙事"),
                 "image_path": str(scene_images[index].resolve()) if scene_images else None,
                 **palette[index % len(palette)],
             }

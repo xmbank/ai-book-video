@@ -17,6 +17,12 @@ def public_error_message(error: Exception | str) -> tuple[str, bool]:
     text = str(error).strip()
     lowered = text.lower()
 
+    if "image_generation_transient_error" in lowered:
+        return (
+            "图片生成服务连接暂时中断，系统已自动重试。已生成的竖屏图会保留，请稍后点击“重试”继续。",
+            True,
+        )
+
     network_markers = (
         "douyin_share_fetch_failed",
         "sslerror",
@@ -37,6 +43,10 @@ def public_error_message(error: Exception | str) -> tuple[str, bool]:
         return "已识别为抖音图文作品。当前版本仅支持视频作品。", False
     if "没有获得视频下载地址" in text or "未找到视频播放地址" in text:
         return "抖音作品已解析，但暂未获得视频下载地址，请稍后重试。", True
+    if "douyin_detail_cookie_unavailable" in lowered:
+        return "抖音分享页未返回公开数据，且未能读取 Chrome 中的抖音登录状态。请先在 Chrome 登录抖音后重试。", True
+    if "douyin_detail_api_empty" in lowered or "douyin_detail_fallback_failed" in lowered:
+        return "抖音分享页未返回公开数据，登录会话也未能读取该作品。请确认 Chrome 已登录抖音后重试。", True
     if "分享页未找到作品数据" in text or "未返回结构化元数据" in text:
         return "未能从抖音分享页读取作品数据，链接可能已失效或访问受限。", True
     if "未找到现有抖音采集后端" in text:

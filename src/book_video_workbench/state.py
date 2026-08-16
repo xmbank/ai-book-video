@@ -20,10 +20,10 @@ LEGACY_STAGES = [
 
 STAGES = [
     "repair",
+    "book_info",
     "rewrite",
     "audio",
     "scene_images",
-    "book_info",
     "styles",
     "outputs",
     "review",
@@ -31,10 +31,10 @@ STAGES = [
 
 LEGACY_STAGE_MAP = {
     "repair": ("source", "transcript"),
+    "book_info": (),
     "rewrite": ("rewrite",),
     "audio": ("tts", "subtitles"),
     "scene_images": (),
-    "book_info": (),
     "styles": ("storyboard",),
     "outputs": ("render", "validate"),
     "review": (),
@@ -51,7 +51,7 @@ class PipelineState:
             self._migrate_legacy_stages()
         else:
             self.data = {
-                "schema_version": 1,
+                "schema_version": 3,
                 "updated_at": utc_now(),
                 "stages": {
                     name: {"status": "not_started", "artifacts": []}
@@ -65,6 +65,10 @@ class PipelineState:
     def _migrate_legacy_stages(self) -> None:
         existing = self.data.get("stages") or {}
         if all(name in existing for name in STAGES):
+            if list(existing) != STAGES or int(self.data.get("schema_version") or 1) < 3:
+                self.data["stages"] = {name: existing[name] for name in STAGES}
+                self.data["schema_version"] = 3
+                self.save()
             return
         if not any(name in existing for name in LEGACY_STAGES):
             self.data["stages"] = {
@@ -77,7 +81,7 @@ class PipelineState:
         for name in STAGES:
             sources = [existing[item] for item in LEGACY_STAGE_MAP[name] if item in existing]
             if not sources:
-                status = "stale" if name in {"scene_images", "book_info", "styles", "outputs", "review"} else "not_started"
+                status = "stale" if name in {"book_info", "scene_images", "styles", "outputs", "review"} else "not_started"
                 migrated[name] = {
                     "status": status,
                     "artifacts": [],
@@ -92,7 +96,7 @@ class PipelineState:
                 "message": "由旧流程迁移",
             }
         self.data["stages"] = migrated
-        self.data["schema_version"] = 2
+        self.data["schema_version"] = 3
         self.save()
 
     def save(self) -> None:

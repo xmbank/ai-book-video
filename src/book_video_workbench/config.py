@@ -76,7 +76,7 @@ class Settings:
                 "IMAGE_API_KEY", os.environ.get("LLM_API_KEY", "")
             ),
             image_model=os.environ.get("IMAGE_MODEL", "gpt-image-2"),
-            image_size=os.environ.get("IMAGE_SIZE", "1536x1024"),
+            image_size=os.environ.get("IMAGE_SIZE", "1024x1536"),
             volc_tts_endpoint=os.environ.get(
                 "VOLC_TTS_ENDPOINT",
                 "https://openspeech.bytedance.com/api/v3/tts/unidirectional",

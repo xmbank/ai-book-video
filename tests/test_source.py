@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from book_video_workbench.douyin_bridge import fetch_share_page
+from book_video_workbench.douyin_bridge import _resolve_item, fetch_share_page
 from book_video_workbench.source import normalize_source_meta
 
 
@@ -108,3 +108,41 @@ def test_share_page_failure_has_stable_diagnostic_marker(monkeypatch) -> None:
             sleep=lambda _delay: None,
             curl_path="/usr/bin/curl",
         )
+
+
+def test_share_page_without_item_data_uses_signed_detail_fallback(monkeypatch) -> None:
+    class Resolver:
+        @staticmethod
+        def _parse_router_data(_html):
+            return {"loaderData": {}}
+
+        @staticmethod
+        def _parse_render_data(_html):
+            return None
+
+        @staticmethod
+        def _find_item_list(_payload):
+            return []
+
+        @staticmethod
+        def extract_aweme_id(page_url, _html):
+            assert page_url.endswith("/7655303058867400185/")
+            return "7655303058867400185"
+
+    expected = {"aweme_id": "7655303058867400185", "desc": "测试作品"}
+    seen: list[str] = []
+
+    def fake_detail(aweme_id: str) -> dict:
+        seen.append(aweme_id)
+        return expected
+
+    monkeypatch.setattr("book_video_workbench.douyin_bridge._fetch_detail_item", fake_detail)
+
+    item = _resolve_item(
+        Resolver(),
+        "<script>window._ROUTER_DATA = {}</script>",
+        "https://www.iesdouyin.com/share/video/7655303058867400185/",
+    )
+
+    assert item == expected
+    assert seen == ["7655303058867400185"]
