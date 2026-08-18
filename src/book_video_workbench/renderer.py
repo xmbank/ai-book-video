@@ -20,7 +20,11 @@ def _headline_html(value: str) -> str:
     if len(value) > 8:
         for punctuation in ("，", "。", "！", "？", "；", "："):
             if punctuation in value[:-2]:
-                return escaped.replace(punctuation, punctuation + "<br>", 1)
+                return escaped.replace(
+                    punctuation,
+                    punctuation + '<span class="headline-break">',
+                    1,
+                ) + "</span>"
     return escaped
 
 
@@ -61,15 +65,22 @@ def generate_project(
         )
 
     duration = float(manifest["duration_seconds"])
+    selling_points = [
+        html.escape(str(item))
+        for item in manifest.get("content", {}).get("selling_points") or []
+        if str(item).strip()
+    ]
     scenes_html = []
-    scene_ids = []
+    scene_animations = []
     for scene in manifest["scenes"]:
         scene_id = html.escape(scene["id"], quote=True)
-        scene_ids.append((scene_id, float(scene["start"])))
+        scene_start = float(scene["start"])
+        scene_duration = float(scene["duration"])
+        scene_index = len(scenes_html)
         media = ""
         if scene_image_names:
             image_name = scene_image_names[(len(scenes_html)) % len(scene_image_names)]
-            media = f'<img id="{scene_id}-image" class="scene-image" src="assets/{image_name}" alt="">'
+            media = f'<img id="{scene_id}-image" class="scene-image" data-layout-allow-overflow src="assets/{image_name}" alt="">'
         elif source_video_name:
             media = (
                 f'<video id="{scene_id}-source-video" class="background-video" src="assets/{source_video_name}" muted '
@@ -77,17 +88,55 @@ def generate_project(
             )
         cover = ""
         cover_roles = {"product_space", "product_reveal", "product_detail", "closing"}
-        if cover_name and (
-            scene.get("shot_role") in cover_roles
-            or len(scenes_html) == len(manifest["scenes"]) - 1
-        ):
-            cover = f'<img class="book-cover" src="assets/{html.escape(cover_name)}" alt="">'
+        product_scene = bool(
+            cover_name
+            and (
+                scene.get("shot_role") in cover_roles
+                or len(scenes_html) == len(manifest["scenes"]) - 1
+            )
+        )
+        if product_scene:
+            cover_suffix = Path(cover_name).suffix.lower()
+            scene_cover_name = f"cover-scene-{scene_index + 1:03}{cover_suffix}"
+            shutil.copy2(assets_dir / cover_name, assets_dir / scene_cover_name)
+            chips = "".join(
+                f'<span>{point}</span>' for point in selling_points[:3]
+            )
+            cover = (
+                '<div class="product-stage">'
+                f'<img class="book-cover" src="assets/{html.escape(scene_cover_name)}" alt="">'
+                '<div class="product-copy"><small>THIS BOOK / 本期好书</small>'
+                f'<strong>《{html.escape(manifest["content"]["book_title"])}》</strong>'
+                f'<div class="selling-point-chips">{chips}</div></div></div>'
+            )
+        direction_from = -2 if scene_index % 2 == 0 else 2
+        direction_to = 2 if scene_index % 2 == 0 else -2
+        animation = (
+            f'timeline.fromTo("#{scene_id}", {{ opacity: 0 }}, '
+            f'{{ opacity: 1, duration: 0.22, ease: "power2.out" }}, {scene_start}); '
+            f'timeline.fromTo("#{scene_id} .scene-image", '
+            f'{{ scale: 1.12, xPercent: {direction_from} }}, '
+            f'{{ scale: 1.01, xPercent: {direction_to}, duration: {max(2.0, scene_duration):.3f}, ease: "none" }}, '
+            f'{scene_start}); '
+        )
+        if product_scene:
+            animation += (
+                f'timeline.fromTo("#{scene_id} .product-stage", '
+                '{ opacity: 0, y: 40, scale: .94 }, '
+                '{ opacity: 1, y: 0, scale: 1, duration: .55, ease: "power2.out" }, '
+                f'{scene_start + 0.08}); '
+            )
+        scene_animations.append(animation)
         headline_size = 66 if len(scene["headline"]) > 8 else 74
-        headline_class = " headline-key" if len(scenes_html) in {0, len(manifest["scenes"]) - 1} else " headline-hidden"
+        headline_class = (
+            " headline-key"
+            if len(scenes_html) in {0, len(manifest["scenes"]) - 1} or product_scene
+            else " headline-hidden"
+        )
         scenes_html.append(
-            f'''<section id="{scene_id}" class="clip scene" data-start="{scene['start']}" data-duration="{scene['duration']}" data-track-index="1" style="--bg:{scene['background']};--accent:{scene['accent']};--fg:{scene['foreground']};--headline-size:{headline_size}px">
+            f'''<section id="{scene_id}" class="clip scene{' product-scene' if product_scene else ''}" data-role="{html.escape(str(scene.get('shot_role') or ''), quote=True)}" data-start="{scene['start']}" data-duration="{scene['duration']}" data-track-index="1" style="--bg:{scene['background']};--accent:{scene['accent']};--fg:{scene['foreground']};--headline-size:{headline_size}px">
   {media}
-  <div class="scene-mark">BOOK / 读书</div>
+  <div class="scene-mark">BOOK / 好书</div>
   <div class="headline{headline_class}">{_headline_html(scene['headline'])}</div>
   {cover}
   <div class="page-number">{len(scenes_html) + 1:02}</div>
@@ -117,18 +166,25 @@ def generate_project(
     body {{ font-family: "Workbench Chinese", "Workbench Chinese Fallback", sans-serif; color: #fff; letter-spacing: 0; }}
     #root {{ position: relative; width: 1080px; height: 1920px; overflow: hidden; }}
     .scene {{ position: absolute; inset: 0; overflow: hidden; background: var(--bg); }}
-    .scene::before {{ content: ""; position: absolute; z-index: 2; inset: 0; background: rgba(7, 10, 12, .18); }}
-    .scene::after {{ content: ""; position: absolute; z-index: 3; inset: auto 0 0; height: 560px; background: rgba(5, 7, 9, .58); }}
+    .scene::before {{ content: ""; position: absolute; z-index: 2; inset: 0; background: rgba(7, 10, 12, .07); }}
+    .scene::after {{ content: ""; position: absolute; z-index: 3; inset: auto 0 0; height: 520px; background: linear-gradient(180deg, rgba(5,7,9,0), rgba(5,7,9,.48) 48%, rgba(5,7,9,.72)); }}
     .scene-image {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }}
     .background-video {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }}
     .media-shade {{ position: absolute; inset: 0; background: rgba(10, 12, 15, .6); }}
     .scene-mark {{ position: absolute; z-index: 4; left: 70px; top: 82px; padding: 11px 18px; background: rgba(0,0,0,.56); font-size: 26px; font-weight: 700; color: white; }}
     .headline {{ position: absolute; z-index: 4; left: 74px; right: 74px; top: 235px; color: white; font-size: var(--headline-size); line-height: 1.18; font-weight: 800; overflow-wrap: anywhere; text-wrap: balance; text-shadow: 0 4px 16px rgba(0,0,0,.72); }}
+    .headline-break {{ display: block; }}
     .headline-hidden {{ display: none; }}
-    .book-cover {{ position: absolute; width: 330px; max-height: 480px; object-fit: contain; right: 100px; top: 820px; filter: drop-shadow(0 20px 24px rgba(0,0,0,.32)); }}
+    .product-stage {{ position: absolute; z-index: 6; left: 72px; right: 72px; top: 560px; min-height: 650px; display: grid; grid-template-columns: 420px 1fr; align-items: center; gap: 46px; padding: 44px; border: 1px solid rgba(255,255,255,.22); border-radius: 34px; background: linear-gradient(135deg, rgba(13,16,18,.82), rgba(13,16,18,.48)); box-shadow: 0 30px 90px rgba(0,0,0,.3); backdrop-filter: blur(14px); }}
+    .book-cover {{ width: 100%; max-height: 570px; object-fit: contain; filter: drop-shadow(0 24px 28px rgba(0,0,0,.42)); }}
+    .product-copy {{ display: flex; flex-direction: column; gap: 20px; min-width: 0; }}
+    .product-copy small {{ font-size: 22px; font-weight: 800; letter-spacing: .08em; color: #ffd25f; }}
+    .product-copy strong {{ font-size: 48px; line-height: 1.2; color: white; }}
+    .selling-point-chips {{ display: flex; flex-direction: column; gap: 14px; }}
+    .selling-point-chips span {{ padding: 14px 18px; border-left: 7px solid #ffd25f; border-radius: 8px 18px 18px 8px; background: rgba(255,255,255,.12); font-size: 27px; line-height: 1.3; font-weight: 700; color: white; }}
     .page-number {{ position: absolute; z-index: 4; right: 70px; top: 88px; font: 700 46px/1 Arial, sans-serif; color: white; text-shadow: 0 3px 10px rgba(0,0,0,.7); }}
     .caption {{ position: absolute; z-index: 10; left: 62px; right: 62px; bottom: 245px; min-height: 150px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px 30px; font-size: 50px; line-height: 1.34; font-weight: 800; text-shadow: 0 3px 8px rgba(0,0,0,.9); }}
-    .caption span {{ padding: 8px 14px; background: rgba(0,0,0,.64); box-decoration-break: clone; -webkit-box-decoration-break: clone; }}
+    .caption span {{ padding: 8px 14px; background: rgba(0,0,0,.36); border-radius: 10px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }}
     .brand {{ position: absolute; z-index: 20; left: 62px; right: 62px; bottom: 122px; font-size: 23px; color: rgba(255,255,255,.9); text-shadow: 0 2px 6px rgba(0,0,0,.75); }}
     .declaration {{ position: absolute; z-index: 20; left: 62px; right: 62px; bottom: 68px; font-size: 18px; color: rgba(255,255,255,.72); }}
     body.typewriter-dark .scene::before {{ background: rgba(0,0,0,.68); }}
@@ -138,6 +194,13 @@ def generate_project(
     body.dark-knowledge .headline {{ padding: 32px; background: rgba(5,12,16,.72); border-left: 12px solid #74c9bd; }}
     body.book-broadcast .scene-mark {{ background: #111; color: #f3cb43; }}
     body.book-broadcast .headline {{ top: 185px; padding: 22px 26px; background: rgba(0,0,0,.72); font-size: 66px; }}
+    body.book-sales .scene-mark {{ background: #f2c94c; color: #171717; }}
+    body.book-sales .scene::before {{ background: linear-gradient(180deg, rgba(0,0,0,.16), rgba(0,0,0,0) 38%); }}
+    body.book-sales .scene-image {{ filter: saturate(1.12) contrast(1.06); }}
+    body.book-sales .headline {{ top: 185px; max-width: 900px; padding: 22px 28px; border-left: 12px solid #f2c94c; background: linear-gradient(90deg, rgba(0,0,0,.76), rgba(0,0,0,.18)); font-size: 64px; }}
+    body.book-sales .product-scene .headline {{ top: 185px; right: 240px; }}
+    body.book-sales .caption {{ font-size: 48px; }}
+    body.book-sales .caption span {{ background: rgba(0,0,0,.28); text-shadow: 0 3px 10px rgba(0,0,0,.95), 0 0 2px #000; }}
   </style>
 </head>
 <body class="{style_id}">
@@ -151,7 +214,7 @@ def generate_project(
   <script>
     window.__timelines = window.__timelines || {{}};
     const timeline = gsap.timeline({{ paused: true }});
-    {''.join(f'timeline.fromTo("#{scene_id}", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.28, ease: "power2.out" }}, {start}); timeline.fromTo("#{scene_id} .scene-image", {{ scale: 1.08 }}, {{ scale: 1, duration: 5, ease: "none" }}, {start});' for scene_id, start in scene_ids)}
+    {''.join(scene_animations)}
     window.__timelines["main"] = timeline;
   </script>
 </body>
@@ -177,16 +240,16 @@ def render_project(project_dir: Path, output_path: Path, settings: Settings) -> 
     cli = settings.project_root / "node_modules" / ".bin" / "hyperframes"
     if not cli.is_file():
         raise RuntimeError("缺少 HyperFrames；请在项目目录执行 npm install")
-    lint_log = project_dir.parent / "logs" / "hyperframes-lint.log"
-    lint = run_command(
-        [str(cli), "lint", str(project_dir), "--json"],
+    check_log = project_dir.parent / "logs" / "hyperframes-check.log"
+    check = run_command(
+        [str(cli), "check", str(project_dir), "--json"],
         cwd=settings.project_root,
-        log_path=lint_log,
+        log_path=check_log,
         timeout=120,
     )
-    lint_result = json.loads(lint.stdout)
-    if lint_result.get("errorCount", 0):
-        raise RuntimeError(f"HyperFrames 模板校验失败，详见 {lint_log}")
+    check_result = json.loads(check.stdout)
+    if not check_result.get("ok"):
+        raise RuntimeError(f"HyperFrames 模板校验失败，详见 {check_log}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_command(
         [

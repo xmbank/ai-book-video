@@ -12,17 +12,12 @@ from typing import Any
 GENERIC_PUBLIC_ERROR = "本步骤运行失败，详细技术信息已保存在任务日志中。请检查输入或服务设置后重试。"
 
 
-def public_error_message(error: Exception | str) -> tuple[str, bool]:
+def public_error_message(
+    error: Exception | str, *, stage: str | None = None
+) -> tuple[str, bool]:
     """Return a short user-facing message while keeping diagnostics off the API."""
     text = str(error).strip()
     lowered = text.lower()
-
-    if "image_generation_transient_error" in lowered:
-        return (
-            "图片生成服务连接暂时中断，系统已自动重试。已生成的竖屏图会保留，请稍后点击“重试”继续。",
-            True,
-        )
-
     network_markers = (
         "douyin_share_fetch_failed",
         "sslerror",
@@ -33,8 +28,65 @@ def public_error_message(error: Exception | str) -> tuple[str, bool]:
         "connecttimeout",
         "readtimeout",
         "timed out",
+        "the read operation timed out",
         "max retries exceeded",
     )
+
+    if "ai_book_cover_generation_failed" in lowered:
+        return (
+            "AI 封面生成服务暂时不可用，请稍后直接重试；不需要手动寻找封面。",
+            True,
+        )
+
+    if "image_generation_transient_error" in lowered:
+        return (
+            "图片生成服务连接暂时中断，系统已自动重试。已生成的竖屏图会保留，请稍后点击“重试”继续。",
+            True,
+        )
+
+    if "product_assets_required" in lowered:
+        return (
+            "商品资料流程已改为自动模式：系统会采用来源中提取的卖点并生成 AI 概念封面。请直接重试本步骤。",
+            True,
+        )
+
+    if "auto_product_assets_unavailable" in lowered:
+        return (
+            "系统未能从当前内容识别出完整书名和至少 2 条卖点。请在“书籍与商品”补充书名后重试；封面仍会由 AI 自动生成。",
+            False,
+        )
+
+    tts_network_markers = (
+        "sslerror",
+        "unexpected_eof_while_reading",
+        "connection reset",
+        "connection aborted",
+        "timed out",
+        "urlopen error",
+    )
+    if "tts_transient_error" in lowered or (
+        "豆包 tts 网络请求失败" in lowered
+        and any(marker in lowered for marker in tts_network_markers)
+    ):
+        return (
+            "豆包配音连接暂时中断，系统已自动重试。已生成的音频片段会保留，请直接重试本步骤。",
+            True,
+        )
+
+    if stage == "scene_images" and any(
+        marker in lowered for marker in network_markers
+    ):
+        return (
+            "竖屏视觉分镜服务连接暂时中断，系统已自动重试。已生成的场景图会保留，请直接重试本步骤。",
+            True,
+        )
+
+    if stage == "audio" and any(marker in lowered for marker in network_markers):
+        return (
+            "豆包配音连接暂时中断，系统已自动重试。已生成的音频片段会保留，请直接重试本步骤。",
+            True,
+        )
+
     if any(marker in lowered for marker in network_markers):
         return "抖音短链连接被临时中断，系统已自动重试。请稍后点击“重试”。", True
     if "未在输入中找到抖音链接" in text:

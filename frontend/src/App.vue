@@ -57,8 +57,8 @@ type TaskDetail = TaskSummary & {
   tts_plan?: { segments: any[]; target_segment_seconds: number };
   tts_metadata?: { duration_seconds: number; segment_count: number; segments: any[]; provider: string; voice_type?: string };
   subtitles?: { items: any[]; duration_seconds: number };
-  scene_manifest?: { count: number; grid_count: number; contact_sheet_count?: number; briefs: any[]; grids_urls: string[]; contact_sheets_urls?: string[]; scenes_urls: string[]; mode: string; quality?: { status: string; flagged_count: number } };
-  book_info?: { book_title: string; book_author: string; confidence: number; evidence: string; needs_review: boolean; selling_points?: string[]; book_cover?: string; asset_warnings?: string[]; product_ready?: boolean };
+  scene_manifest?: { count: number; requested_count?: number; count_strategy?: string; grid_count: number; contact_sheet_count?: number; briefs: any[]; grids_urls: string[]; contact_sheets_urls?: string[]; scenes_urls: string[]; mode: string; visual_style_id?: string; quality?: { status: string; flagged_count: number; regeneration_count?: number; plan_audit?: { failures?: string[]; product_scene_count?: number; human_emotion_scene_count?: number } } };
+  book_info?: { book_title: string; book_author: string; confidence: number; evidence: string; needs_review: boolean; selling_points?: string[]; selling_points_source?: string; suggested_selling_points?: string[]; book_cover?: string; book_cover_source?: string; asset_warnings?: string[]; product_ready?: boolean };
   style_config?: { selected: string[]; counts: Record<string, number>; declaration: string; output_count: number };
   output_index?: { outputs: any[] };
   review_report?: { status: string; checks: Record<string, any>; outputs: any[] };
@@ -68,7 +68,7 @@ type TaskDetail = TaskSummary & {
 
 const stages = [
   { id: "repair", label: "ASR 校对稿", hint: "只纠错与去噪，不在本步做二次创作", icon: FileText },
-  { id: "book_info", label: "书籍与商品", hint: "先确认具体书籍、封面和真实卖点", icon: BookOpen },
+  { id: "book_info", label: "书籍与商品", hint: "自动提取商品卖点并生成 AI 概念封面，可随时手动替换", icon: BookOpen },
   { id: "rewrite", label: "三策略二创", hint: "反常识、人群痛点、商品方案分别创作并评分", icon: PencilLine },
   { id: "audio", label: "分段音频", hint: "长文案切段并合成 TTS", icon: FileAudio },
   { id: "scene_images", label: "竖屏视觉分镜", hint: "视觉导演拆镜并逐张生成原生竖图", icon: ImageIcon },
@@ -78,6 +78,7 @@ const stages = [
 ];
 
 const stylePresets = [
+  { id: "book-sales", label: "强转化图书", color: "#efb928", note: "推荐：人脸情绪、痛点反差、AI 概念封面和卖点卡会进入生图与合成" },
   { id: "clean-narration", label: "清雅语录", color: "#b44b3d", note: "强观点开头，适合观点型逐字稿" },
   { id: "typewriter-dark", label: "黑底打字机", color: "#242424", note: "文字节奏更强，适合金句观点" },
   { id: "dark-knowledge", label: "暗色知识卡", color: "#356478", note: "暗色底图，适合知识类内容" },
@@ -100,14 +101,16 @@ const candidateTab = ref("A");
 const repairDraft = ref("");
 const scriptDraft = ref("");
 const bookDraft = ref({ book_title: "", book_author: "", confidence: 1, selling_points_text: "", book_cover: "", rewrite_mode: "medium", target_seconds: 60 });
-const styleDraft = ref({ scene_count: 18, declaration: "", counts: {} as Record<string, number> });
+const styleDraft = ref({ scene_count: 0, declaration: "", counts: {} as Record<string, number> });
 const draftDirty = ref<Record<EditableSection, boolean>>({ repair: false, script: false, book: false, styles: false });
 const settingsData = ref<Record<string, any>>({});
 const settingsDraft = ref<Record<string, string>>({});
+const bookCoverUploading = ref(false);
+const bookCoverGenerating = ref(false);
 const createForm = ref({
   share_text: "",
   keyword: "健康图书",
-  scene_count: 18,
+  scene_count: 0,
   target_seconds: 60,
   book_title: "",
   selling_points_text: "",
@@ -128,6 +131,7 @@ const selectedStageRecord = computed(() => current.value?.stages?.[selectedStage
 const activeCandidate = computed(() => current.value?.rewrite_candidates?.candidates?.find((item: any) => item.id === candidateTab.value));
 const stageIndex = computed(() => stages.findIndex((item) => item.id === selectedStage.value));
 const completedStages = computed(() => stages.filter((item) => current.value?.stages?.[item.id]?.status === "succeeded").length);
+const recommendedScenes = computed(() => Math.max(6, Math.min(63, Math.ceil(Number(bookDraft.value.target_seconds || createForm.value.target_seconds || 60) / 3.6))));
 
 function humanStatus(value: string) {
   return ({
@@ -184,7 +188,7 @@ function syncDraftsFromServer(data: TaskDetail, force = false) {
   }
   if (force || !draftDirty.value.styles) {
     styleDraft.value = {
-      scene_count: data.options?.scene_count ?? 18,
+      scene_count: data.options?.scene_count ?? 0,
       declaration: data.style_config?.declaration || data.options?.declaration || "",
       counts: { ...Object.fromEntries(stylePresets.map((item) => [item.id, 0])), ...(data.style_config?.counts || data.options?.style_counts || {}) },
     };
@@ -245,13 +249,13 @@ async function createTask(mode: "real" | "demo") {
     const payload = mode === "demo" ? {
       mode: "demo", share_text: "", keyword: "时间管理图书", book_title: "把时间当作朋友",
       selling_points: ["从长期视角理解时间管理", "适合反复阅读"], rewrite_mode: "medium",
-      scene_count: 18, target_seconds: 60, subtitle_mode: "proportional",
+      scene_count: 0, target_seconds: 60, subtitle_mode: "proportional",
       styles: ["clean-narration"], style_counts: { "clean-narration": 1 },
     } : {
       mode: "real", share_text: createForm.value.share_text, keyword: createForm.value.keyword,
       book_title: createForm.value.book_title, selling_points: createForm.value.selling_points_text.split(/[\n,，；;]/).map((item) => item.trim()).filter(Boolean),
       rewrite_mode: createForm.value.rewrite_mode, scene_count: Number(createForm.value.scene_count), target_seconds: Number(createForm.value.target_seconds),
-      subtitle_mode: "proportional", styles: ["clean-narration"], style_counts: { "clean-narration": 1 },
+      subtitle_mode: "proportional", styles: ["book-sales"], style_counts: { "book-sales": 1 },
     };
     const task = await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
     await loadTasks();
@@ -293,6 +297,12 @@ function chooseCandidate(candidate: any) {
   scriptDraft.value = candidate.script;
   markDraftDirty("script");
 }
+function applySuggestedSellingPoints() {
+  const suggestions = current.value?.book_info?.suggested_selling_points || [];
+  if (!suggestions.length) return;
+  bookDraft.value.selling_points_text = suggestions.join("\n");
+  markDraftDirty("book");
+}
 async function saveBook() {
   if (!current.value) return;
   busy.value = true;
@@ -311,6 +321,68 @@ async function saveBook() {
   }
   catch (exception: any) { error.value = exception.message; }
   finally { busy.value = false; }
+}
+async function generateBookCover() {
+  if (!current.value) return;
+  if (!bookDraft.value.book_title.trim()) {
+    error.value = "请先填写或确认书名，再生成封面";
+    return;
+  }
+  bookCoverGenerating.value = true;
+  error.value = "";
+  try {
+    const enteredPoints = bookDraft.value.selling_points_text.split(/[\n,，；;]/).map((item) => item.trim()).filter(Boolean);
+    const sellingPoints = enteredPoints.length ? enteredPoints : (current.value.book_info?.suggested_selling_points || []);
+    const generated = await api(`/api/tasks/${current.value.id}/book-cover/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        book_title: bookDraft.value.book_title,
+        book_author: bookDraft.value.book_author,
+        selling_points: sellingPoints,
+      }),
+    });
+    bookDraft.value.book_cover = generated.path;
+    if (!enteredPoints.length && sellingPoints.length) {
+      bookDraft.value.selling_points_text = sellingPoints.slice(0, 3).join("\n");
+    }
+    markDraftDirty("book");
+  } catch (exception: any) {
+    error.value = exception.message;
+  } finally {
+    bookCoverGenerating.value = false;
+  }
+}
+async function uploadBookCover(event: Event) {
+  if (!current.value) return;
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) {
+    error.value = "封面图片不能超过 10 MB";
+    input.value = "";
+    return;
+  }
+  bookCoverUploading.value = true;
+  error.value = "";
+  try {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("读取封面失败"));
+      reader.readAsDataURL(file);
+    });
+    const uploaded = await api(`/api/tasks/${current.value.id}/book-cover`, {
+      method: "POST",
+      body: JSON.stringify({ filename: file.name, data_url: dataUrl }),
+    });
+    bookDraft.value.book_cover = uploaded.path;
+    markDraftDirty("book");
+  } catch (exception: any) {
+    error.value = exception.message;
+  } finally {
+    bookCoverUploading.value = false;
+    input.value = "";
+  }
 }
 function changeStyleCount(id: string, delta: number) {
   styleDraft.value.counts[id] = Math.max(0, Math.min(5, (styleDraft.value.counts[id] || 0) + delta));
@@ -363,15 +435,16 @@ onBeforeUnmount(() => window.clearInterval(timer));
 
       <section class="import-band">
         <div class="band-heading"><Link :size="19" /><div><h2>URL 导入</h2><p>支持抖音短链、分享文案或完整作品链接</p></div></div>
+        <div class="import-notice"><Sparkles :size="16" /><span>正式带货会自动识别书名和卖点，并用图片模型生成概念封面；不需要提前找图，后续仍可手动替换。</span></div>
         <div class="import-row">
           <textarea class="source-input" v-model="createForm.share_text" rows="2" placeholder="粘贴抖音分享链接或完整分享文案"></textarea>
           <label>主题关键词<input v-model="createForm.keyword" /></label>
           <label>目标时长<select v-model.number="createForm.target_seconds"><option v-for="seconds in [30,45,60,90,120]" :key="seconds" :value="seconds">{{ seconds }} 秒</option></select></label>
-          <label>竖屏镜头<select v-model.number="createForm.scene_count"><option v-for="count in [6,9,12,15,18,24,30,36]" :key="count" :value="count">{{ count }} 张</option></select></label>
+          <label>竖屏镜头<select v-model.number="createForm.scene_count"><option :value="0">自动 · 约每 3.6 秒一镜</option><option v-for="count in [12,18,24,30,36,42,48,54,63]" :key="count" :value="count">{{ count }} 张</option></select></label>
           <label>书名（可选）<input v-model="createForm.book_title" placeholder="留空则先识别" /></label>
-          <label class="selling-points-input">已确认卖点（可选）<input v-model="createForm.selling_points_text" placeholder="用逗号分隔，禁止填写未经确认的信息" /></label>
+          <label class="selling-points-input">商品卖点（可选）<input v-model="createForm.selling_points_text" placeholder="留空时由 AI 根据来源内容自动提取" /></label>
           <label>二创强度<select v-model="createForm.rewrite_mode"><option value="light">轻度</option><option value="medium">中度</option><option value="deep">深度</option></select></label>
-          <button class="primary-btn" :disabled="busy || !createForm.share_text.trim()" @click="createTask('real')"><LoaderCircle v-if="busy" class="spin" :size="16" /><Sparkles v-else :size="16" />按 URL 导入并制片</button>
+          <button class="primary-btn" :disabled="busy || !createForm.share_text.trim()" @click="createTask('real')"><LoaderCircle v-if="busy" class="spin" :size="16" /><Sparkles v-else :size="16" />导入并生成强转化方案</button>
         </div>
       </section>
 
@@ -435,21 +508,34 @@ onBeforeUnmount(() => window.clearInterval(timer));
         </section>
 
         <section v-else-if="selectedStage==='scene_images'" class="workspace-panel image-workspace">
-          <div class="image-summary"><div><small>原生竖图</small><strong>{{ current.scene_manifest?.count || current.options.scene_count }} 张</strong></div><div><small>预览联系表</small><strong>{{ current.scene_manifest?.contact_sheet_count ?? current.scene_manifest?.grid_count ?? 0 }} 组</strong></div><div><small>自动质检</small><strong>{{ current.scene_manifest?.quality?.status === 'passed' ? '通过' : `${current.scene_manifest?.quality?.flagged_count || 0} 张待看` }}</strong></div><button class="primary-btn" @click="runFrom('scene_images')"><RefreshCw :size="15" />重新生成竖屏图</button></div>
+          <div class="image-summary"><div><small>原生竖图</small><strong>{{ current.scene_manifest?.count ? `${current.scene_manifest.count} 张` : current.options.scene_count ? `${current.options.scene_count} 张` : '待按音频计算' }}</strong><span v-if="current.scene_manifest?.count_strategy==='automatic-duration'">按音频自动计算</span></div><div><small>视觉预设</small><strong>{{ stylePresets.find(item=>item.id===current.scene_manifest?.visual_style_id)?.label || current.scene_manifest?.visual_style_id || '历史预设' }}</strong></div><div><small>商品镜头</small><strong>{{ current.scene_manifest?.quality?.plan_audit?.product_scene_count ?? '--' }} 个</strong></div><div><small>自动质检</small><strong>{{ current.scene_manifest?.quality?.plan_audit ? (current.scene_manifest.quality.status === 'passed' ? '带货视觉通过' : `${current.scene_manifest.quality.flagged_count || 0} 张 / 方案待看`) : (current.scene_manifest?.quality?.status === 'passed' ? '历史基础质检通过' : `${current.scene_manifest?.quality?.flagged_count || 0} 张待看`) }}</strong><span v-if="current.scene_manifest?.quality?.regeneration_count">已自动重生 {{ current.scene_manifest.quality.regeneration_count }} 次</span></div><button class="primary-btn" @click="runFrom('scene_images')"><RefreshCw :size="15" />重新生成竖屏图</button></div>
+          <div v-if="current.scene_manifest?.quality?.plan_audit?.failures?.length" class="conversion-warning"><AlertTriangle :size="18" /><div><strong>带货视觉方案尚未通过</strong><p>{{ current.scene_manifest.quality.plan_audit.failures.join(' · ') }}</p></div></div>
           <div class="grid-section"><header><h3>竖图预览联系表</h3><p>联系表由真实 9:16 单图确定性拼接，只用于总览，不参与成片裁切。</p></header><div class="grid-gallery portrait-contacts"><img v-for="(url,index) in current.scene_manifest?.contact_sheets_urls || current.scene_manifest?.grids_urls || []" :key="url" :src="url" :alt="`联系表 ${index+1}`" /></div></div>
           <div class="scene-section"><header><h3>原生 9:16 场景图</h3><span>{{ current.scene_manifest?.scenes_urls?.length || 0 }}/{{ current.scene_manifest?.count || 0 }} 已生成</span></header><div class="scene-gallery"><article v-for="(url,index) in current.scene_manifest?.scenes_urls || []" :key="url"><img :src="url" :alt="`场景图 ${index+1}`" /><strong>{{ String(index+1).padStart(2,'0') }} · {{ current.scene_manifest?.briefs?.[index]?.shot_role || '镜头' }}</strong><p>{{ current.scene_manifest?.briefs?.[index]?.visual_purpose || current.scene_manifest?.briefs?.[index]?.script_text }}</p></article></div></div>
         </section>
 
         <section v-else-if="selectedStage==='book_info'" class="workspace-panel book-workspace">
-          <div class="confidence" :class="{warn:current.book_info?.needs_review || current.book_info?.asset_warnings?.length}"><BookOpen :size="28" /><div><small>商品资料完整度</small><strong>{{ current.book_info?.product_ready ? '可二创' : `${Math.round((current.book_info?.confidence || 0)*100)}%` }}</strong><p>{{ current.book_info?.evidence || '等待识别书籍信息' }}</p><p v-for="warning in current.book_info?.asset_warnings || []" :key="warning">· {{ warning }}</p></div></div>
-          <div class="book-form" @input="markDraftDirty('book')" @change="markDraftDirty('book')"><label>书籍名<input v-model="bookDraft.book_title" placeholder="必须对应实际挂车商品" /></label><label>作者 / 具体版本<input v-model="bookDraft.book_author" /></label><label>已确认卖点<textarea v-model="bookDraft.selling_points_text" rows="3" placeholder="每行一条，只填写可从商品页或实物确认的卖点"></textarea></label><label>真实封面本地路径<input v-model="bookDraft.book_cover" placeholder="可选；AI 不会虚构封面" /></label><label>二创强度<select v-model="bookDraft.rewrite_mode"><option value="light">轻度校改</option><option value="medium">中度二创</option><option value="deep">深度二创</option></select></label><label>目标口播时长（秒）<input v-model.number="bookDraft.target_seconds" type="number" min="10" max="1200" /></label><button class="primary-btn" @click="saveBook"><Save :size="15" />确认商品并使二创待重跑</button></div>
-          <div class="title-preview"><h3>下游使用原则</h3><p>书籍信息现在先于二创和生图。真实封面由后期叠加；没有确认的卖点、版次或内页不会让模型猜。</p><div><span>《{{ bookDraft.book_title || '待确认书名' }}》</span><span>{{ bookDraft.book_author || '待确认作者 / 版本' }}</span><small>{{ bookDraft.selling_points_text || '尚无已确认商品卖点' }}</small></div></div>
+          <div class="confidence" :class="{warn:current.book_info?.needs_review || current.book_info?.asset_warnings?.length}"><BookOpen :size="28" /><div><small>商品资料完整度</small><strong>{{ current.book_info?.product_ready ? '自动商品资料已就绪' : '正在自动准备商品资料' }}</strong><p>{{ current.book_info?.evidence || '等待识别书籍信息' }}</p><p v-for="warning in current.book_info?.asset_warnings || []" :key="warning">· {{ warning }}</p></div></div>
+          <div class="book-edit-column">
+            <div v-if="current.book_info?.suggested_selling_points?.length" class="selling-point-suggestions"><div><small>AI 从视频来源中提取</small><span v-for="point in current.book_info.suggested_selling_points" :key="point">{{ point }}</span></div><button class="ghost-btn" @click="applySuggestedSellingPoints">重新填入 AI 卖点</button></div>
+            <div class="book-form" @input="markDraftDirty('book')" @change="markDraftDirty('book')">
+              <label>书籍名<input v-model="bookDraft.book_title" placeholder="AI 识别后仍可修改" /></label>
+              <label>作者 / 具体版本<input v-model="bookDraft.book_author" /></label>
+              <label>商品卖点<textarea v-model="bookDraft.selling_points_text" rows="3" placeholder="留空时自动采用 AI 从来源内容中提取的卖点"></textarea></label>
+              <div class="cover-actions"><button class="primary-btn" type="button" :disabled="bookCoverGenerating || bookCoverUploading" @click.stop="generateBookCover"><Sparkles :size="15" />{{ bookCoverGenerating ? 'AI 正在生成封面…' : bookDraft.book_cover ? 'AI 重新生成封面' : 'AI 生成封面' }}</button><label class="cover-upload">或手动替换<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="bookCoverUploading || bookCoverGenerating" @change.stop="uploadBookCover" /><small>{{ bookCoverUploading ? '正在上传并校验…' : '可选 · JPG、PNG、WebP，最大 10 MB' }}</small></label></div>
+              <small v-if="bookDraft.book_cover" class="cover-ready">当前封面：{{ bookDraft.book_cover.split('/').pop() }} · {{ current.book_info?.book_cover_source === 'ai_generated' || bookDraft.book_cover.split('/').pop()?.startsWith('ai-cover-v') ? 'AI 生成' : '手动图片' }}</small>
+              <label>二创强度<select v-model="bookDraft.rewrite_mode"><option value="light">轻度校改</option><option value="medium">中度二创</option><option value="deep">深度二创</option></select></label>
+              <label>目标口播时长（秒）<input v-model.number="bookDraft.target_seconds" type="number" min="10" max="1200" /><small>强转化模式建议约 {{ recommendedScenes }} 个镜头</small></label>
+              <button class="primary-btn" :disabled="bookCoverUploading || bookCoverGenerating" @click="saveBook"><Save :size="15" />保存商品资料并使二创待重跑</button>
+            </div>
+          </div>
+          <div class="title-preview"><h3>AI 概念封面</h3><p>系统先生成无文字封面视觉，再准确叠加书名和作者，避免图片模型写错字。手动上传始终可以覆盖自动结果。</p><img v-if="bookDraft.book_cover" class="book-cover-preview" :src="mediaUrl(bookDraft.book_cover)" :alt="`${bookDraft.book_title}封面`" /><div v-else><span>《{{ bookDraft.book_title || '待识别书名' }}》</span><span>{{ bookDraft.book_author || '待识别作者' }}</span><small>运行流程时会自动生成，不需要你先找图</small></div></div>
         </section>
 
         <section v-else-if="selectedStage==='styles'" class="workspace-panel style-workspace">
-          <div class="style-head"><div><h3>视频风格</h3><p>每种风格可以单独设置生成数量，总数用于矩阵号分发。</p></div><strong>共 {{ Object.values(styleDraft.counts).reduce((a:number,b:number)=>a+b,0) }} 条</strong></div>
+          <div class="style-head"><div><h3>视频风格</h3><p>主视觉风格会同时影响场景规划、图片提示词和成片样式；切换主风格需要重新生成场景图。</p></div><strong>共 {{ Object.values(styleDraft.counts).reduce((a:number,b:number)=>a+b,0) }} 条</strong></div>
           <div class="style-list"><article v-for="preset in stylePresets" :key="preset.id" :class="{selected:styleDraft.counts[preset.id]>0}"><span class="style-color" :style="{background:preset.color}"></span><div><strong>{{ preset.label }}</strong><p>{{ preset.note }}</p></div><div class="stepper"><button @click="changeStyleCount(preset.id,-1)">−</button><span>{{ styleDraft.counts[preset.id] || 0 }}</span><button @click="changeStyleCount(preset.id,1)">+</button></div></article></div>
-          <div class="style-settings" @input="markDraftDirty('styles')" @change="markDraftDirty('styles')"><label>竖屏镜头数量<select v-model.number="styleDraft.scene_count"><option v-for="count in [6,9,12,15,18,24,30,36]" :key="count" :value="count">{{ count }} 张</option></select></label><label class="declaration-field">健康与内容声明<textarea v-model="styleDraft.declaration" rows="3"></textarea></label><button class="primary-btn" @click="saveStyles"><Save :size="15" />保存风格与数量</button></div>
+          <div class="style-settings" @input="markDraftDirty('styles')" @change="markDraftDirty('styles')"><label>竖屏镜头数量<select v-model.number="styleDraft.scene_count"><option :value="0">自动 · 约每 3.6 秒一镜</option><option v-for="count in [12,18,24,30,36,42,48,54,63]" :key="count" :value="count">{{ count }} 张</option></select></label><label class="declaration-field">健康与内容声明<textarea v-model="styleDraft.declaration" rows="3"></textarea></label><button class="primary-btn" @click="saveStyles"><Save :size="15" />保存风格与数量</button></div>
         </section>
 
         <section v-else-if="selectedStage==='outputs'" class="workspace-panel outputs-workspace">

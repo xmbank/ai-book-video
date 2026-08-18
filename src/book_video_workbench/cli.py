@@ -11,6 +11,13 @@ from book_video_workbench.pipeline import Pipeline, RunOptions, create_task
 from book_video_workbench.state import STAGES
 
 
+def _scene_count(value: str) -> int:
+    count = int(value)
+    if count != 0 and not 6 <= count <= 63:
+        raise argparse.ArgumentTypeError("场景图数量必须为 0（自动），或在 6 到 63 之间")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI 图书带货视频工作台 P0")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -30,10 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--target-seconds", type=int, default=600)
     run.add_argument(
         "--scene-count",
-        type=int,
-        choices=[9, 18, 27, 36, 45, 54, 63],
-        default=18,
-        help="场景图数量；约十分钟视频建议 63 张",
+        type=_scene_count,
+        default=0,
+        help="场景图数量；0 表示按最终音频时长自动计算，手动可填 6 到 63",
     )
     run.add_argument("--whisper-model", default="small")
     run.add_argument("--subtitle-mode", choices=["whisper", "proportional"], default="whisper")

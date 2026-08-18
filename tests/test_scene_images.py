@@ -4,16 +4,20 @@ import io
 import json
 import urllib.error
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from book_video_workbench.article_prompts import (
     IMAGE_PROMPT_VERSION,
     IMAGE_SYSTEM_PROMPT,
+    build_image_prompt,
 )
 from book_video_workbench.config import Settings
 import book_video_workbench.scene_images as scene_images
 from book_video_workbench.scene_images import (
+    audit_scene_plan,
+    compose_cover_closing_fallback,
     compose_grid,
+    generate_ai_book_cover,
     generate_scene_images,
     inspect_scene_image,
     split_grid,
@@ -195,6 +199,122 @@ def test_image_api_retries_transient_disconnects(tmp_path: Path, monkeypatch) ->
     assert Image.open(output).size == (720, 1280)
 
 
+def test_ai_book_cover_uses_generated_artwork_and_local_exact_title(
+    tmp_path: Path, monkeypatch
+) -> None:
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (1024, 1536), (42, 112, 124)).save(image_buffer, format="PNG")
+    prompts: list[tuple[str, str]] = []
+
+    def fake_request(prompt, settings, *, size):
+        prompts.append((prompt, size))
+        return image_buffer.getvalue()
+
+    monkeypatch.setattr(scene_images, "_request_generated_image", fake_request)
+    output = tmp_path / "book" / "assets" / "ai-cover-v1.jpg"
+    metadata = output.with_suffix(".json")
+    cover, saved_metadata = generate_ai_book_cover(
+        book_title="身体重置",
+        book_author="测试作者",
+        selling_points=["每餐蛋白质配速", "彩虹饮食"],
+        output_path=output,
+        metadata_path=metadata,
+        settings=_settings(tmp_path),
+    )
+
+    assert cover == output
+    assert saved_metadata == metadata
+    assert Image.open(output).size == (900, 1350)
+    value = json.loads(metadata.read_text(encoding="utf-8"))
+    assert value["book_title"] == "身体重置"
+    assert value["text_rendering"] == "deterministic-local-overlay"
+    assert prompts[0][1] == "1024x1536"
+    assert "Do not draw any words" in prompts[0][0]
+
+
+def test_cover_closing_fallback_builds_portrait_scene(tmp_path: Path) -> None:
+    cover = tmp_path / "ai-cover.jpg"
+    Image.new("RGB", (900, 1350), (42, 112, 124)).save(cover)
+    output = compose_cover_closing_fallback(cover, tmp_path / "scene-019.jpg")
+
+    assert output.is_file()
+    assert Image.open(output).size == (720, 1280)
+
+
+def test_transient_failure_on_final_scene_reuses_ai_cover(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def fake_director(*args, **kwargs):
+        briefs, prompt = _briefs(kwargs["count"])
+        briefs[-1]["shot_role"] = "closing"
+        return briefs, prompt
+
+    def fake_generate(prompt, output_path, settings, *, size):
+        index = int(output_path.stem.split("-")[-1])
+        if index == 6:
+            raise RuntimeError("IMAGE_GENERATION_TRANSIENT_ERROR: upstream timeout")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1024, 1536), (40 + index * 20, 90, 150)).save(output_path)
+        return output_path
+
+    cover = tmp_path / "ai-cover.jpg"
+    Image.new("RGB", (900, 1350), (42, 112, 124)).save(cover)
+    monkeypatch.setattr(scene_images, "direct_scene_briefs", fake_director)
+    monkeypatch.setattr(scene_images, "_generate_image_api", fake_generate)
+    manifest_path, _, scenes = generate_scene_images(
+        "第一句。第二句。第三句。第四句。第五句。第六句。",
+        count=6,
+        task_dir=tmp_path,
+        version=1,
+        settings=_settings(tmp_path),
+        demo=False,
+        book_title="测试书",
+        selling_points=["卖点一", "卖点二"],
+        book_cover=str(cover),
+        product_ready=True,
+        visual_style_id="book-sales",
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(scenes) == 6
+    assert scenes[-1].is_file()
+    assert manifest["quality"]["checks"][-1]["generation_fallback"] == "ai-cover-closing-composite"
+
+
+def test_complete_scene_checkpoint_skips_director_and_image_apis(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scenes_dir = tmp_path / "scene-images" / "v1" / "scenes"
+    scenes_dir.mkdir(parents=True)
+    for index in range(1, 7):
+        Image.new("RGB", (720, 1280), (30 + index * 25, 80, 150)).save(
+            scenes_dir / f"scene-{index:03}.jpg"
+        )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("complete checkpoint must not call an external provider")
+
+    monkeypatch.setattr(scene_images, "direct_scene_briefs", unexpected)
+    monkeypatch.setattr(scene_images, "_generate_image_api", unexpected)
+    manifest_path, contacts, scenes = generate_scene_images(
+        "第一句。第二句。第三句。第四句。第五句。第六句。",
+        count=6,
+        task_dir=tmp_path,
+        version=1,
+        settings=_settings(tmp_path),
+        demo=False,
+        book_title="测试书",
+        selling_points=["卖点一", "卖点二"],
+        product_ready=True,
+        visual_style_id="book-sales",
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(scenes) == 6
+    assert len(contacts) == 1
+    assert manifest["director_prompt"]["version"] == "checkpoint-recovery-v1"
+
+
 def test_image_quality_flags_near_duplicates(tmp_path: Path) -> None:
     first = tmp_path / "first.jpg"
     second = tmp_path / "second.jpg"
@@ -206,3 +326,127 @@ def test_image_quality_flags_near_duplicates(tmp_path: Path) -> None:
         previous_hashes=[int(str(first_report["average_hash"]), 16)],
     )
     assert "near_duplicate" in report["flags"]
+
+
+def test_sales_image_prompt_includes_product_truth_and_commercial_direction() -> None:
+    prompt, _ = build_image_prompt(
+        {
+            "shot_role": "product_reveal",
+            "visual_purpose": "建立购买理由",
+            "subject": "真实封面后期合成区",
+            "action": "人物视线指向商品区",
+        },
+        shot_index=2,
+        shot_count=12,
+        book_title="抗老生活",
+        cover_available=True,
+        selling_points=["从日常习惯理解健康老化", "提供可读的生活观察"],
+        visual_style_id="book-sales",
+        product_ready=True,
+    )
+
+    assert "强转化图书广告" in prompt
+    assert "从日常习惯理解健康老化" in prompt
+    assert "不要生成空白书" in prompt
+    assert "增强停留、购买理由或理想状态" in prompt
+
+
+def test_sales_scene_plan_audit_checks_product_people_and_blank_books() -> None:
+    briefs, _ = _briefs(12)
+    roles = [
+        "pattern_interrupt",
+        "product_reveal",
+        "pain_point",
+        "human_action",
+        "method_demo",
+        "detail",
+        "product_space",
+        "proof",
+        "desired_outcome",
+        "transition",
+        "human_action",
+        "closing",
+    ]
+    for brief, role in zip(briefs, roles):
+        brief["shot_role"] = role
+
+    report = audit_scene_plan(
+        briefs,
+        cover_available=True,
+        product_ready=True,
+        visual_style_id="book-sales",
+    )
+    assert report["status"] == "passed"
+    assert report["product_scene_count"] == 3
+    assert report["human_emotion_scene_count"] >= 4
+
+    briefs[3]["subject"] = "一本空白书"
+    failed = audit_scene_plan(
+        briefs,
+        cover_available=True,
+        product_ready=True,
+        visual_style_id="book-sales",
+    )
+    assert "blank_book_placeholder" in failed["failures"]
+
+
+def test_sales_generation_regenerates_low_energy_images_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: dict[str, int] = {}
+
+    def fake_director(*args, **kwargs):
+        briefs, prompt = _briefs(kwargs["count"])
+        roles = [
+            "pattern_interrupt",
+            "product_reveal",
+            "pain_point",
+            "human_action",
+            "method_demo",
+            "closing",
+        ]
+        for brief, role in zip(briefs, roles):
+            brief["shot_role"] = role
+        return briefs, prompt
+
+    def fake_generate(prompt, output_path, settings, *, size):
+        calls[output_path.name] = calls.get(output_path.name, 0) + 1
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if calls[output_path.name] == 1:
+            image = Image.new("RGB", (1024, 1536), (120, 120, 120))
+        else:
+            image = Image.new("RGB", (1024, 1536), (235, 174, 35))
+            draw = ImageDraw.Draw(image)
+            offset = int(output_path.stem.split("-")[-1]) * 41
+            draw.rectangle((80 + offset, 100, 600 + offset, 1000), fill=(28, 72, 155))
+        image.save(output_path)
+        return output_path
+
+    cover = tmp_path / "cover.jpg"
+    Image.new("RGB", (600, 900), (200, 40, 30)).save(cover)
+    monkeypatch.setattr(scene_images, "direct_scene_briefs", fake_director)
+    monkeypatch.setattr(scene_images, "_generate_image_api", fake_generate)
+    manifest_path, _, _ = generate_scene_images(
+        "第一句。第二句。第三句。第四句。第五句。第六句。",
+        count=6,
+        task_dir=tmp_path,
+        version=1,
+        settings=_settings(tmp_path),
+        demo=False,
+        book_title="测试书",
+        selling_points=["卖点一", "卖点二"],
+        book_cover=str(cover),
+        product_ready=True,
+        visual_style_id="book-sales",
+        auto_regenerate=True,
+        requested_count=0,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert all(attempts == 2 for attempts in calls.values())
+    assert manifest["count_strategy"] == "automatic-duration"
+    assert manifest["quality"]["regeneration_count"] == 6
+    assert all(
+        item["generation_attempts"] == 2
+        for item in manifest["quality"]["checks"]
+    )

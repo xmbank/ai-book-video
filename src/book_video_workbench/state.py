@@ -136,7 +136,7 @@ class PipelineState:
         try:
             yield outputs
         except Exception as exc:
-            public_message, retryable = public_error_message(exc)
+            public_message, retryable = public_error_message(exc, stage=name)
             stage.update(
                 {
                     "status": "failed",

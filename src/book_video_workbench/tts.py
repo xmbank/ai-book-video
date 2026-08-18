@@ -2,19 +2,36 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
+import ssl
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
 
 from book_video_workbench.config import Settings
-from book_video_workbench.util import media_duration, require_command, run_command, write_json
+from book_video_workbench.util import (
+    media_duration,
+    read_json,
+    require_command,
+    run_command,
+    write_json,
+)
+
+
+TTS_NETWORK_RETRY_DELAYS = (1.0, 3.0, 8.0)
+TTS_TRANSIENT_HTTP_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 def _speech_rate(speed_ratio: float) -> int:
     return max(-50, min(100, round((speed_ratio - 1.0) * 100)))
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _seed_tts_payload(text: str, voice_type: str, speed_ratio: float) -> dict:
@@ -83,6 +100,54 @@ def _decode_seed_tts_response(raw: bytes) -> tuple[bytes, dict]:
     return bytes(audio), result_meta
 
 
+def _read_seed_tts_response(request: urllib.request.Request) -> bytes:
+    for delay in (*TTS_NETWORK_RETRY_DELAYS, None):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")
+            if exc.code not in TTS_TRANSIENT_HTTP_CODES:
+                raise RuntimeError(
+                    f"豆包 TTS 请求失败 ({exc.code}): {body[:1000]}"
+                ) from exc
+            if delay is None:
+                raise RuntimeError(
+                    f"TTS_TRANSIENT_ERROR: 豆包 TTS 请求连续失败 "
+                    f"({exc.code}): {body[:1000]}"
+                ) from exc
+            time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
+            if delay is None:
+                reason = getattr(exc, "reason", exc)
+                raise RuntimeError(
+                    f"TTS_TRANSIENT_ERROR: 豆包 TTS 网络请求连续失败: {reason}"
+                ) from exc
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _segment_checkpoint_duration(
+    audio_path: Path, metadata_path: Path, text: str
+) -> float | None:
+    if not audio_path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = read_json(metadata_path)
+        if not isinstance(metadata, dict) or not metadata.get("provider"):
+            return None
+        recorded_duration = float(metadata.get("duration_seconds") or 0)
+        if recorded_duration <= 0:
+            return None
+        text_sha256 = metadata.get("text_sha256")
+        if text_sha256 and text_sha256 != _text_sha256(text):
+            return None
+        duration = media_duration(audio_path)
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return duration if duration > 0 else None
+
+
 def normalize_audio(input_path: Path, output_path: Path) -> Path:
     ffmpeg = require_command("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,14 +200,9 @@ def synthesize_volcengine(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            audio_bytes, response_meta = _decode_seed_tts_response(response.read())
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        raise RuntimeError(f"豆包 TTS 请求失败 ({exc.code}): {body[:1000]}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"豆包 TTS 网络请求失败: {exc.reason}") from exc
+    audio_bytes, response_meta = _decode_seed_tts_response(
+        _read_seed_tts_response(request)
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp:
         temp_path = Path(temp.name)
@@ -152,12 +212,13 @@ def synthesize_volcengine(
     finally:
         temp_path.unlink(missing_ok=True)
     meta = {
-        "schema_version": 1,
+        "schema_version": 2,
         "provider": "volcengine-seed-tts-2.0",
         "request_id": request_id,
         "voice_type": settings.volc_tts_voice_type,
         "resource_id": settings.volc_tts_resource_id,
         "speed_ratio": speed_ratio,
+        "text_sha256": _text_sha256(text),
         "duration_seconds": media_duration(output_path),
         **response_meta,
     }
@@ -177,9 +238,10 @@ def synthesize_macos_demo(
             run_command([say, "-r", "235", "-o", str(aiff_path), text], timeout=120)
         normalize_audio(aiff_path, output_path)
     meta = {
-        "schema_version": 1,
+        "schema_version": 2,
         "provider": "macos-say-demo",
         "voice": "Tingting-or-system-default",
+        "text_sha256": _text_sha256(text),
         "duration_seconds": media_duration(output_path),
         "warning": "仅用于离线媒体链路验证，不作为正式 TTS 音质验收结果",
     }
@@ -233,17 +295,23 @@ def synthesize_segments(
     for index, text in enumerate(segments, start=1):
         audio = segment_dir / f"segment-{index:02}.wav"
         metadata = segment_dir / f"segment-{index:02}.json"
-        if demo:
-            synthesize_macos_demo(text, audio, metadata)
-        else:
-            synthesize_volcengine(text, audio, metadata, settings)
+        duration = _segment_checkpoint_duration(audio, metadata, text)
+        reused = duration is not None
+        if not reused:
+            if demo:
+                synthesize_macos_demo(text, audio, metadata)
+            else:
+                synthesize_volcengine(text, audio, metadata, settings)
+            duration = media_duration(audio)
         parts.append(audio)
         records.append(
             {
                 "index": index,
                 "text": text,
+                "text_sha256": _text_sha256(text),
                 "audio_path": str(audio.resolve()),
-                "duration_seconds": round(media_duration(audio), 3),
+                "duration_seconds": round(duration, 3),
+                "reused_checkpoint": reused,
             }
         )
     concatenate_audio(parts, output_path)

@@ -120,3 +120,61 @@ def test_image_disconnect_uses_image_specific_public_message(tmp_path: Path) -> 
         "已生成的竖屏图会保留，请稍后点击“重试”继续。"
     )
     assert failed["error"]["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    "technical",
+    [
+        "TTS_TRANSIENT_ERROR: 豆包 TTS 网络请求连续失败: TLS disconnected",
+        "豆包 TTS 网络请求失败: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred",
+    ],
+)
+def test_tts_disconnect_uses_tts_specific_public_message(
+    tmp_path: Path, technical: str
+) -> None:
+    state = PipelineState(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        with state.running("audio"):
+            raise RuntimeError(technical)
+
+    failed = state.data["stages"]["audio"]
+    assert failed["message"] == (
+        "豆包配音连接暂时中断，系统已自动重试。"
+        "已生成的音频片段会保留，请直接重试本步骤。"
+    )
+    assert failed["error"]["retryable"] is True
+
+
+def test_scene_director_timeout_uses_visual_specific_public_message(
+    tmp_path: Path,
+) -> None:
+    state = PipelineState(tmp_path)
+
+    with pytest.raises(TimeoutError):
+        with state.running("scene_images"):
+            raise TimeoutError("The read operation timed out")
+
+    failed = state.data["stages"]["scene_images"]
+    assert failed["message"] == (
+        "竖屏视觉分镜服务连接暂时中断，系统已自动重试。"
+        "已生成的场景图会保留，请直接重试本步骤。"
+    )
+    assert failed["error"]["retryable"] is True
+
+
+def test_missing_product_assets_uses_actionable_public_message(tmp_path: Path) -> None:
+    state = PipelineState(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        with state.running("scene_images"):
+            raise RuntimeError(
+                "PRODUCT_ASSETS_REQUIRED: 正式带货生图前，请先确认真实封面和至少 2 条商品卖点。"
+            )
+
+    failed = state.data["stages"]["scene_images"]
+    assert failed["message"] == (
+        "商品资料流程已改为自动模式：系统会采用来源中提取的卖点并生成 AI 概念封面。"
+        "请直接重试本步骤。"
+    )
+    assert failed["error"]["retryable"] is True

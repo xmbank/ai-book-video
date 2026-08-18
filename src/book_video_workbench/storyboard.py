@@ -21,6 +21,7 @@ def build_storyboard(
     scene_briefs: list[dict] | None = None,
     style_id: str = "clean-narration",
     book_author: str = "",
+    selling_points: list[str] | None = None,
     declaration: str = "本视频基于公开资料整理，仅作阅读分享，不构成医疗建议。",
     version_path: Path | None = None,
     manifest_path: Path | None = None,
@@ -34,20 +35,34 @@ def build_storyboard(
         {"background": "#103f46", "accent": "#ffd05a", "foreground": "#f5f1e8"},
         {"background": "#27262f", "accent": "#70d6c8", "foreground": "#f7f4ed"},
     ]
-    labels = [hook, book_title, "把一件小事，长期做对", "今天就从一页开始"]
+    selling_points = [
+        str(item).strip() for item in selling_points or [] if str(item).strip()
+    ]
+    labels = [hook, book_title, *(selling_points[:2] or ["这本书解决什么问题"]), "适合你吗？"]
+    product_roles = {"product_space", "product_reveal", "product_detail", "closing"}
     scenes = []
     for index in range(scene_count):
         start = boundaries[index]
         end = boundaries[index + 1]
         brief = (scene_briefs or [{}])[index % max(1, len(scene_briefs or [{}]))]
+        shot_role = brief.get("shot_role", "editorial_symbol")
+        if index == 0:
+            headline = hook
+        elif shot_role in product_roles:
+            headline = selling_points[(index - 1) % len(selling_points)] if selling_points else book_title
+        elif index == scene_count - 1:
+            headline = "适合你吗？"
+        else:
+            headline = labels[index % len(labels)]
         scenes.append(
             {
                 "id": f"scene-{index + 1}",
                 "start": start,
                 "duration": round(end - start, 3),
-                "headline": labels[index % len(labels)],
+                "headline": headline,
                 "script_text": brief.get("script_text", ""),
-                "shot_role": brief.get("shot_role", "editorial_symbol"),
+                "shot_role": shot_role,
+                "product_scene": shot_role in product_roles,
                 "visual_purpose": brief.get("visual_purpose", "推进图书知识叙事"),
                 "image_path": str(scene_images[index].resolve()) if scene_images else None,
                 **palette[index % len(palette)],
@@ -75,6 +90,7 @@ def build_storyboard(
             "book_author": book_author,
             "hook": hook,
             "declaration": declaration,
+            "selling_points": selling_points,
         },
         "audio": {"path": str(tts_path.resolve()), "volume": 1.0},
         "subtitles": {"path": str(subtitle_path.resolve()), "style": "bold-safe-zone-v1"},

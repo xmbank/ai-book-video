@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import threading
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
@@ -11,11 +14,19 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from book_video_workbench.config import Settings
+from book_video_workbench.content_flow import product_asset_warnings, product_is_ready
 from book_video_workbench.doctor import diagnose
-from book_video_workbench.pipeline import Pipeline, RunOptions, create_task
+from book_video_workbench.pipeline import (
+    Pipeline,
+    RunOptions,
+    create_task,
+    primary_visual_style,
+)
+from book_video_workbench.scene_images import generate_ai_book_cover
 from book_video_workbench.state import PipelineState, STAGES
 from book_video_workbench.subtitles import validate_timeline, write_subtitles
 from book_video_workbench.util import (
@@ -48,9 +59,9 @@ class TaskCreate(BaseModel):
     keyword: str = "图书带货"
     rewrite_mode: Literal["light", "medium", "deep"] = "medium"
     rewrite_notes: str = "保留可核实事实，重组叙事角度、信息顺序和表达，避免同义词式洗稿"
-    scene_count: int = Field(default=18)
-    styles: list[str] = Field(default_factory=lambda: ["clean-narration"])
-    style_counts: dict[str, int] = Field(default_factory=lambda: {"clean-narration": 1})
+    scene_count: int = Field(default=0, ge=0, le=63)
+    styles: list[str] = Field(default_factory=lambda: ["book-sales"])
+    style_counts: dict[str, int] = Field(default_factory=lambda: {"book-sales": 1})
     declaration: str = "本视频基于公开资料整理，仅作阅读分享，不构成医疗建议或行为指导。"
 
 
@@ -72,11 +83,22 @@ class BookUpdate(BaseModel):
     target_seconds: int | None = Field(default=None, ge=10, le=1200)
 
 
+class BookCoverUpload(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    data_url: str = Field(min_length=32)
+
+
+class BookCoverGenerate(BaseModel):
+    book_title: str = Field(min_length=1)
+    book_author: str = ""
+    selling_points: list[str] = Field(default_factory=list)
+
+
 class StyleUpdate(BaseModel):
     styles: list[str]
     style_counts: dict[str, int] = Field(default_factory=dict)
     declaration: str
-    scene_count: int = Field(ge=6, le=63)
+    scene_count: int = Field(ge=0, le=63)
 
 
 class SubtitleItem(BaseModel):
@@ -162,7 +184,7 @@ def _public_stages(stages: dict) -> dict:
                 )
                 if value
             )
-            message, retryable = public_error_message(diagnostic)
+            message, retryable = public_error_message(diagnostic, stage=name)
             cleaned["message"] = message
             cleaned["error"] = {
                 "type": error_record.get("type") or "Error",
@@ -303,8 +325,8 @@ def list_tasks() -> list[dict]:
 def create_web_task(value: TaskCreate) -> dict:
     if value.mode == "real" and not value.share_text.strip():
         raise HTTPException(422, "真实任务需要抖音分享链接")
-    if not 6 <= value.scene_count <= 63:
-        raise HTTPException(422, "场景图数量必须在 6 到 63 之间")
+    if value.scene_count != 0 and not 6 <= value.scene_count <= 63:
+        raise HTTPException(422, "场景图数量必须为自动，或在 6 到 63 之间")
     task_dir = create_task(settings, RunOptions(**value.model_dump()))
     _submit(task_dir)
     return _task_summary(task_dir, detail=True)
@@ -371,12 +393,20 @@ def update_repair(task_id: str, value: RepairUpdate) -> dict:
 @app.patch("/api/tasks/{task_id}/book")
 def update_book(task_id: str, value: BookUpdate) -> dict:
     task_dir = _task_dir(task_id)
-    selling_points = [item.strip() for item in value.selling_points if item.strip()]
+    current_task = read_json(task_dir / "task.json")
+    previous_book = _artifact_value(task_dir, current_task, "book_info") or {}
+    suggested_selling_points = [
+        str(item).strip()
+        for item in previous_book.get("suggested_selling_points") or []
+        if str(item).strip()
+    ]
+    provided_selling_points = [item.strip() for item in value.selling_points if item.strip()]
+    selling_points = provided_selling_points or suggested_selling_points[:3]
     cover_value = (value.book_cover or "").strip()
     if cover_value:
         cover = Path(cover_value).expanduser().resolve()
         if not cover.is_file():
-            raise HTTPException(422, "真实封面路径不存在")
+            raise HTTPException(422, "封面图片路径不存在")
         cover_value = str(cover)
     output = _next_version(task_dir, "book", "identity-v", ".json")
     write_json(
@@ -388,14 +418,27 @@ def update_book(task_id: str, value: BookUpdate) -> dict:
             "confidence": value.confidence,
             "evidence": "用户在工作台确认",
             "needs_review": False,
+            "suggested_selling_points": suggested_selling_points,
             "selling_points": selling_points,
-            "book_cover": cover_value,
-            "asset_warnings": (
-                ([] if selling_points else ["尚未填写已确认商品卖点，二创只能聚焦阅读价值"])
-                + ([] if cover_value else ["尚未提供真实封面，系统不会让图片模型虚构封面"])
-                + ([] if value.book_author.strip() else ["作者或具体版本尚未确认"])
+            "selling_points_source": (
+                "user_provided" if provided_selling_points else "ai_extracted_from_source"
             ),
-            "product_ready": bool(selling_points),
+            "book_cover": cover_value,
+            "book_cover_source": (
+                "ai_generated"
+                if cover_value and Path(cover_value).name.startswith("ai-cover-v")
+                else "user_provided" if cover_value else ""
+            ),
+            "asset_warnings": product_asset_warnings(
+                book_author=value.book_author.strip(),
+                selling_points=selling_points,
+                book_cover=cover_value,
+            ),
+            "product_ready": product_is_ready(
+                book_title=value.book_title.strip(),
+                selling_points=selling_points,
+                book_cover=cover_value,
+            ),
             "confirmed_at": utc_now(),
         },
     )
@@ -416,21 +459,112 @@ def update_book(task_id: str, value: BookUpdate) -> dict:
     return _task_summary(task_dir, detail=True)
 
 
+@app.post("/api/tasks/{task_id}/book-cover/generate")
+def generate_book_cover(task_id: str, value: BookCoverGenerate) -> dict:
+    task_dir = _task_dir(task_id)
+    output = _next_version(task_dir, "book/assets", "ai-cover-v", ".jpg")
+    metadata = output.with_suffix(".json")
+    try:
+        generate_ai_book_cover(
+            book_title=value.book_title,
+            book_author=value.book_author,
+            selling_points=value.selling_points,
+            output_path=output,
+            metadata_path=metadata,
+            settings=Settings.from_env(),
+        )
+    except RuntimeError as exc:
+        message, _ = public_error_message(exc)
+        raise HTTPException(502, message) from exc
+    return {
+        "path": str(output.resolve()),
+        "media_url": f"/api/tasks/{task_id}/media/{output.relative_to(task_dir)}",
+        "source": "ai_generated",
+        "metadata_path": str(metadata.resolve()),
+    }
+
+
+@app.post("/api/tasks/{task_id}/book-cover")
+def upload_book_cover(task_id: str, value: BookCoverUpload) -> dict:
+    task_dir = _task_dir(task_id)
+    header, separator, encoded = value.data_url.partition(",")
+    mime_to_format = {
+        "data:image/jpeg;base64": ("JPEG", ".jpg"),
+        "data:image/png;base64": ("PNG", ".png"),
+        "data:image/webp;base64": ("WEBP", ".webp"),
+    }
+    requested = mime_to_format.get(header.lower())
+    if separator != "," or not requested:
+        raise HTTPException(422, "封面仅支持 JPG、PNG 或 WebP 图片")
+    if len(encoded) > 14_000_000:
+        raise HTTPException(422, "封面图片不能超过 10 MB")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(422, "封面图片数据无效") from exc
+    if not raw or len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(422, "封面图片不能超过 10 MB")
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            source.verify()
+        with Image.open(BytesIO(raw)) as source:
+            if (source.format or "").upper() != requested[0]:
+                raise HTTPException(422, "封面文件类型与图片内容不一致")
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            if image.width < 200 or image.height < 200:
+                raise HTTPException(422, "封面图片分辨率过低，短边至少 200 像素")
+            image.thumbnail((2400, 3200), Image.Resampling.LANCZOS)
+            if requested[0] == "JPEG" and image.mode not in {"RGB", "L"}:
+                background = Image.new("RGB", image.size, "white")
+                if "A" in image.getbands():
+                    background.paste(image, mask=image.getchannel("A"))
+                else:
+                    background.paste(image.convert("RGB"))
+                image = background
+            assets_dir = task_dir / "book" / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            output = assets_dir / f"cover{requested[1]}"
+            temporary = assets_dir / f"cover-upload{requested[1]}"
+            save_options = {"quality": 94} if requested[0] in {"JPEG", "WEBP"} else {"optimize": True}
+            image.save(temporary, format=requested[0], **save_options)
+            temporary.replace(output)
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(422, "无法读取封面图片，请换一张有效图片") from exc
+    return {
+        "filename": value.filename,
+        "path": str(output.resolve()),
+        "media_url": f"/api/tasks/{task_id}/media/{output.relative_to(task_dir)}",
+    }
+
+
 @app.patch("/api/tasks/{task_id}/styles")
 def update_styles(task_id: str, value: StyleUpdate) -> dict:
     task_dir = _task_dir(task_id)
     task_path = task_dir / "task.json"
     task = read_json(task_path)
+    previous_styles = list(task["options"].get("styles") or [])
+    previous_counts = dict(task["options"].get("style_counts") or {})
+    previous_visual_style = primary_visual_style(previous_styles, previous_counts)
+    previous_scene_count_value = task["options"].get("scene_count")
+    previous_scene_count = int(
+        previous_scene_count_value if previous_scene_count_value is not None else 18
+    )
     task["options"]["styles"] = value.styles
     task["options"]["style_counts"] = value.style_counts
     task["options"]["declaration"] = value.declaration
-    previous_scene_count = int(task["options"].get("scene_count") or 18)
     task["options"]["scene_count"] = value.scene_count
     task["updated_at"] = utc_now()
     write_json(task_path, task)
     state = PipelineState(task_dir)
+    next_visual_style = primary_visual_style(value.styles, value.style_counts)
     state.invalidate_from(
-        "scene_images" if previous_scene_count != value.scene_count else "styles"
+        "scene_images"
+        if previous_scene_count != value.scene_count
+        or previous_visual_style != next_visual_style
+        else "styles"
     )
     return _task_summary(task_dir, detail=True)
 

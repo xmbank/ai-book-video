@@ -17,6 +17,7 @@ from book_video_workbench.article_prompts import (
     CONTENT_CARD_PROMPT_VERSION,
     CONTENT_CARD_SYSTEM_PROMPT,
     CONTENT_CARD_USER_PROMPT,
+    IMAGE_STYLE_PROFILES,
     REPAIR_PROMPT_VERSION,
     REPAIR_SYSTEM_PROMPT,
     REPAIR_USER_PROMPT,
@@ -69,7 +70,7 @@ REWRITE_STRATEGIES = (
         "id": "C",
         "label": "商品解决方案",
         "instruction": (
-            "尽早展示具体图书解决了什么阅读问题，使用已确认卖点解释为什么选择这个版本。"
+            "尽早展示具体图书解决了什么阅读问题，使用来源提取或用户填写的卖点解释为什么选择这本书。"
             "没有商品资料时明确聚焦阅读入口，不得编造规格或内页。"
         ),
     },
@@ -77,23 +78,34 @@ REWRITE_STRATEGIES = (
 
 SHOT_ROLES = (
     "pattern_interrupt",
-    "establishing",
+    "pain_point",
     "human_action",
     "detail",
-    "editorial_symbol",
+    "proof",
+    "method_demo",
+    "desired_outcome",
     "product_space",
+    "product_reveal",
     "transition",
     "closing",
 )
 
 LLM_NETWORK_RETRY_DELAYS = (1.0, 3.0, 8.0)
+SCENE_DIRECTOR_RETRY_DELAYS = (2.0,)
+SCENE_DIRECTOR_REQUEST_TIMEOUT = 90
+SCENE_DIRECTOR_REMOTE_SHOT_LIMIT = 24
 
 
-def _read_llm_response(request: urllib.request.Request) -> bytes:
+def _read_llm_response(
+    request: urllib.request.Request,
+    *,
+    timeout: int = 180,
+    retry_delays: tuple[float, ...] = LLM_NETWORK_RETRY_DELAYS,
+) -> bytes:
     """Read an LLM response, retrying transient TLS/proxy disconnects."""
-    for attempt, delay in enumerate((*LLM_NETWORK_RETRY_DELAYS, None)):
+    for delay in (*retry_delays, None):
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except (urllib.error.URLError, TimeoutError):
             if delay is None:
@@ -108,6 +120,8 @@ def _chat_json(
     system: str,
     user: str,
     temperature: float,
+    request_timeout: int = 180,
+    retry_delays: tuple[float, ...] = LLM_NETWORK_RETRY_DELAYS,
 ) -> dict[str, Any]:
     if not settings.llm_api_key or not settings.llm_model:
         raise RuntimeError("真实内容处理需要配置 LLM_API_KEY 和 LLM_MODEL")
@@ -130,7 +144,13 @@ def _chat_json(
         method="POST",
     )
     try:
-        raw = json.loads(_read_llm_response(request).decode("utf-8"))
+        raw = json.loads(
+            _read_llm_response(
+                request,
+                timeout=request_timeout,
+                retry_delays=retry_delays,
+            ).decode("utf-8")
+        )
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise RuntimeError(f"LLM 请求失败 ({exc.code}): {body[:1000]}") from exc
@@ -303,7 +323,7 @@ def build_content_card(
         CONTENT_CARD_USER_PROMPT,
         book_title=book_title or "待确认",
         book_author=book_author or "待确认",
-        selling_points="；".join(selling_points) or "暂无已确认卖点",
+        selling_points="；".join(selling_points) or "暂无来源卖点",
         keyword=keyword,
         title=title,
         cleaned_transcript=cleaned_text,
@@ -474,7 +494,7 @@ def rewrite_candidates(
                 target_seconds=max(15, target_seconds),
                 book_title=book_title or "待确认",
                 book_author=book_author or "待确认",
-                selling_points="；".join(selling_points) or "暂无已确认卖点",
+                selling_points="；".join(selling_points) or "暂无来源卖点",
                 keyword=keyword,
                 title=title,
                 author=author,
@@ -532,6 +552,31 @@ def rewrite_candidates(
     )
 
 
+def product_asset_warnings(
+    *,
+    book_author: str,
+    selling_points: list[str],
+    book_cover: str,
+) -> list[str]:
+    warnings: list[str] = []
+    if len(selling_points) < 2:
+        warnings.append("商品卖点不足 2 条，系统会优先采用 AI 从来源内容中提取的候选卖点")
+    if not book_cover:
+        warnings.append("AI 概念封面尚未生成；也可以手动上传图片进行替换")
+    if not book_author:
+        warnings.append("作者或具体版本尚未确认")
+    return warnings
+
+
+def product_is_ready(
+    *,
+    book_title: str,
+    selling_points: list[str],
+    book_cover: str,
+) -> bool:
+    return bool(book_title.strip() and len(selling_points) >= 2 and book_cover.strip())
+
+
 def identify_book(
     script_text: str,
     *,
@@ -562,6 +607,10 @@ def identify_book(
             "book_author": existing_author or "李笑来",
             "confidence": 0.98,
             "evidence": "正文中多次明确出现书名，并围绕时间、耐心和成长展开。",
+            "suggested_selling_points": [
+                "从长期视角重新理解时间管理",
+                "把抽象成长问题拆成可执行的小行动",
+            ],
         }
     else:
         result = _chat_json(
@@ -571,20 +620,31 @@ def identify_book(
             user=user_prompt,
         )
     result["schema_version"] = 1
+    result["suggested_selling_points"] = [
+        str(item).strip()
+        for item in result.get("suggested_selling_points") or []
+        if str(item).strip()
+    ][:4]
     result["needs_review"] = float(result.get("confidence") or 0) < 0.6 or not result.get("book_title")
-    result["selling_points"] = [
+    provided_selling_points = [
         str(item).strip() for item in selling_points or [] if str(item).strip()
     ]
+    result["selling_points"] = provided_selling_points or result["suggested_selling_points"][:3]
+    result["selling_points_source"] = (
+        "user_provided" if provided_selling_points else "ai_extracted_from_source"
+    )
     result["book_cover"] = book_cover or ""
-    asset_warnings = []
-    if not result["selling_points"]:
-        asset_warnings.append("尚未填写已确认商品卖点，二创只能聚焦阅读价值")
-    if not result["book_cover"]:
-        asset_warnings.append("尚未提供真实封面，系统不会让图片模型虚构封面")
-    if not result.get("book_author"):
-        asset_warnings.append("作者或具体版本尚未确认")
-    result["asset_warnings"] = asset_warnings
-    result["product_ready"] = bool(result.get("book_title") and result["selling_points"])
+    result["book_cover_source"] = "user_provided" if book_cover else ""
+    result["asset_warnings"] = product_asset_warnings(
+        book_author=str(result.get("book_author") or ""),
+        selling_points=result["selling_points"],
+        book_cover=result["book_cover"],
+    )
+    result["product_ready"] = product_is_ready(
+        book_title=str(result.get("book_title") or ""),
+        selling_points=result["selling_points"],
+        book_cover=result["book_cover"],
+    )
     result["prompt"] = prompt_snapshot(
         BOOK_PROMPT_VERSION, system_prompt, user_prompt
     )
@@ -646,6 +706,30 @@ def split_narration_with_article_prompt(
     return segments, snapshot
 
 
+def _shot_role_for_index(index: int, count: int, visual_style_id: str) -> str:
+    if index == count - 1:
+        return "closing"
+    if visual_style_id in {"book-sales", "book-broadcast"}:
+        if index == 0:
+            return "pattern_interrupt"
+        if index == 1:
+            return "product_reveal"
+        if index > 1 and (index - 1) % 5 == 0:
+            return "product_space"
+        sequence = (
+            "pain_point",
+            "human_action",
+            "method_demo",
+            "detail",
+            "proof",
+            "desired_outcome",
+            "transition",
+            "human_action",
+        )
+        return sequence[(index - 2) % len(sequence)]
+    return SHOT_ROLES[index % len(SHOT_ROLES)]
+
+
 def _fallback_shot(
     source: str,
     *,
@@ -653,14 +737,21 @@ def _fallback_shot(
     count: int,
     occurrence: int,
     book_title: str = "",
+    visual_style_id: str = "clean-narration",
 ) -> dict[str, Any]:
-    role = SHOT_ROLES[index % len(SHOT_ROLES)]
+    role = _shot_role_for_index(index, count, visual_style_id)
     role_details = {
         "pattern_interrupt": (
             "用强反差的具体生活瞬间建立开场冲突",
             "与主题有关的环境和一个清晰物件",
             "静态环境中出现一个打破惯性的动作",
             "近景，主体位于画面上半部，底部留字幕区",
+        ),
+        "pain_point": (
+            "把目标人群的阅读或生活障碍变成一眼可懂的具体痛点",
+            "目标读者与造成困扰的真实生活物件",
+            "人物在忙乱、犹豫或放弃前出现清晰动作",
+            "中近景，人物表情和关键物件同时可见",
         ),
         "establishing": (
             "建立时间、季节或阅读环境",
@@ -680,6 +771,24 @@ def _fallback_shot(
             "自然触碰、翻动或光影缓慢移动",
             "微距细节，结构完整，禁止文字和畸形手指",
         ),
+        "proof": (
+            "建立作者、资料来源或内容整理的可信度",
+            "真实工作场景、研究动作、资料工具或专业环境细节",
+            "人物查阅、标记、比较或整理资料",
+            "中近景，可信主体明确，不伪造数据与证书",
+        ),
+        "method_demo": (
+            "把书中方法转换成马上能看懂的动作演示",
+            "目标读者和完成方法所需的少量真实物件",
+            "完整展示一个步骤或顺序中的关键动作",
+            "动作特写或中景，主体占画面中上部，关系清晰",
+        ),
+        "desired_outcome": (
+            "让目标读者看到更轻松、更有秩序的理想生活状态",
+            "同一目标读者在自然、明亮、有活力的生活场景中",
+            "人物完成一个有掌控感的轻松动作，表情自然积极",
+            "明亮中近景或全身中景，人物是绝对第一主体",
+        ),
         "editorial_symbol": (
             "用东方编辑意象解释抽象知识",
             "纸张、自然纹理、季节或时间意象",
@@ -691,6 +800,12 @@ def _fallback_shot(
             "干净台面、纸张或阅读场景",
             "环境中形成稳定的空白展示位，不绘制具体封面",
             "中近景，右侧或中央留完整矩形安全区",
+        ),
+        "product_reveal": (
+            "用后期封面资产建立商品识别和购买理由",
+            "高质感商品展示背景与目标人群相关的少量生活物件",
+            "光线、人物视线或物件方向集中指向封面合成区",
+            "商品英雄构图，封面合成区占画面约三分之一到二分之一",
         ),
         "transition": (
             "连接前后语义并改变视觉节奏",
@@ -706,11 +821,14 @@ def _fallback_shot(
         ),
     }
     purpose, subject, action, framing = role_details[role]
+    style_direction = IMAGE_STYLE_PROFILES.get(
+        visual_style_id, IMAGE_STYLE_PROFILES["clean-narration"]
+    )
     visual_brief = (
         f"全片镜头 {index + 1}/{count}，必须与其他镜头形成独立画面；"
         f"{purpose}；主体：{subject}；动作：{action}；构图：{framing}；"
         f"这是同一语义的第 {occurrence + 1} 个互补镜头，不重复前镜；"
-        "宣纸米白、墨黑、少量朱砂或松石青，真实自然光，9:16 原生竖屏。"
+        f"视觉预设：{style_direction}；9:16 原生竖屏。"
     )
     return {
         "id": index + 1,
@@ -720,18 +838,49 @@ def _fallback_shot(
         "visual_purpose": purpose,
         "subject": subject,
         "action": action,
-        "location": "与口播主题一致的真实阅读空间或东方编辑场景",
-        "framing": framing + "；底部 28% 不放关键主体",
-        "lighting": "同一视频保持克制自然光与低饱和东方编辑色彩",
-        "continuity": "固定同一读者、米白上衣、深色头发、同一材质体系",
-        "avoid": "文字、Logo、假封面、假漫画内页、重复构图、畸形手部",
+        "location": "与口播主题一致的真实生活、阅读或商品展示场景",
+        "framing": framing + "；底部约 18% 不放关键主体",
+        "lighting": "主体明亮清晰，使用与本片风格匹配的冷暖或明暗对比",
+        "continuity": "固定同一目标读者的年龄段、发型、服装与居住空间",
+        "avoid": "文字、Logo、假封面、空白书、重复构图、无意义留白、畸形手部",
         "visual_brief": visual_brief,
         "book_title": book_title,
+        "visual_style_id": visual_style_id,
         "safety_translation": (
             "不要画医疗病理、身体异常、器官、伤口、病床、手术室、监护仪、"
-            "注射器或惊悚画面；真实封面由后期合成。"
+            "注射器或惊悚画面；封面资产由后期合成。"
         ),
     }
+
+
+def _sanitize_scene_assets(brief: dict[str, Any], *, cover_available: bool) -> None:
+    combined = " ".join(
+        str(brief.get(key) or "")
+        for key in ("subject", "action", "location", "avoid")
+    )
+    blank_book_markers = (
+        "空白书",
+        "空白封面",
+        "无封面",
+        "无字书",
+        "无字页面",
+        "空白书页",
+        "白色书",
+    )
+    if any(marker in combined for marker in blank_book_markers):
+        if cover_available and brief.get("shot_role") in {
+            "product_space",
+            "product_reveal",
+            "closing",
+        }:
+            brief["subject"] = "目标读者的真实生活场景与干净的封面资产后期合成区"
+            brief["action"] = "人物视线、手势或环境光自然引向商品合成区，不生成任何书本"
+        else:
+            brief["subject"] = "与主题相关的目标读者和一个高识别真实生活物件"
+            brief["action"] = "人物完成与口播主题直接相关的具体生活动作，不出现书本替身"
+    brief["avoid"] = (
+        str(brief.get("avoid") or "") + "；空白书、白色无字封面、假商品"
+    ).strip("；")
 
 
 def scene_briefs(
@@ -739,6 +888,7 @@ def scene_briefs(
     count: int,
     *,
     book_title: str = "",
+    visual_style_id: str = "clean-narration",
 ) -> list[dict[str, Any]]:
     sentences = [
         item.strip()
@@ -763,6 +913,7 @@ def scene_briefs(
                 count=count,
                 occurrence=occurrence,
                 book_title=book_title,
+                visual_style_id=visual_style_id,
             )
         )
     return briefs
@@ -777,6 +928,8 @@ def direct_scene_briefs(
     selling_points: list[str],
     cover_available: bool,
     settings: Settings,
+    product_ready: bool = False,
+    visual_style_id: str = "clean-narration",
     demo: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     user_prompt = render_prompt(
@@ -784,36 +937,74 @@ def direct_scene_briefs(
         count=count,
         book_title=book_title or "待确认",
         book_author=book_author or "待确认",
-        selling_points="；".join(selling_points) or "暂无已确认卖点",
+        selling_points="；".join(selling_points) or "暂无来源卖点",
         cover_available="是，后期叠加" if cover_available else "否，禁止虚构",
+        product_ready="是" if product_ready else "否，只能生成内容预览",
+        visual_style_id=visual_style_id,
+        visual_style=IMAGE_STYLE_PROFILES.get(
+            visual_style_id, IMAGE_STYLE_PROFILES["clean-narration"]
+        ),
         script_text=script_text,
     )
     snapshot = prompt_snapshot(
         SCENE_DIRECTOR_PROMPT_VERSION, SCENE_DIRECTOR_SYSTEM_PROMPT, user_prompt
     )
-    fallbacks = scene_briefs(script_text, count, book_title=book_title)
+    fallbacks = scene_briefs(
+        script_text,
+        count,
+        book_title=book_title,
+        visual_style_id=visual_style_id,
+    )
     if demo:
         return fallbacks, snapshot
-    result = _chat_json(
-        settings,
-        temperature=0.35,
-        system=SCENE_DIRECTOR_SYSTEM_PROMPT,
-        user=user_prompt,
-    )
+    if count > SCENE_DIRECTOR_REMOTE_SHOT_LIMIT:
+        return fallbacks, {
+            **snapshot,
+            "execution_mode": "deterministic-local-fallback",
+            "fallback_reason": "remote_shot_limit_exceeded",
+            "remote_shot_limit": str(SCENE_DIRECTOR_REMOTE_SHOT_LIMIT),
+        }
+    try:
+        result = _chat_json(
+            settings,
+            temperature=0.35,
+            system=SCENE_DIRECTOR_SYSTEM_PROMPT,
+            user=user_prompt,
+            request_timeout=SCENE_DIRECTOR_REQUEST_TIMEOUT,
+            retry_delays=SCENE_DIRECTOR_RETRY_DELAYS,
+        )
+    except (OSError, RuntimeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        return fallbacks, {
+            **snapshot,
+            "execution_mode": "deterministic-local-fallback",
+            "fallback_reason": type(exc).__name__,
+        }
     raw_shots = result.get("shots")
     if not isinstance(raw_shots, list):
-        raise RuntimeError("视觉导演结果缺少 shots 数组")
+        return fallbacks, {
+            **snapshot,
+            "execution_mode": "deterministic-local-fallback",
+            "fallback_reason": "missing_shots_array",
+        }
+    snapshot = {**snapshot, "execution_mode": "remote-visual-director"}
     briefs: list[dict[str, Any]] = []
     for index in range(count):
         fallback = fallbacks[index]
         raw = raw_shots[index] if index < len(raw_shots) and isinstance(raw_shots[index], dict) else {}
         brief = {**fallback}
+        proposed_role = str(raw.get("shot_role") or fallback["shot_role"]).strip()
+        if proposed_role not in SHOT_ROLES:
+            proposed_role = fallback["shot_role"]
+        if visual_style_id in {"book-sales", "book-broadcast"}:
+            required_role = _shot_role_for_index(index, count, visual_style_id)
+            if index in {0, 1, count - 1} or required_role == "product_space":
+                proposed_role = required_role
         brief.update(
             {
                 "id": index + 1,
                 "script_text": str(raw.get("narration") or fallback["script_text"]).strip(),
                 "narration": str(raw.get("narration") or fallback["narration"]).strip(),
-                "shot_role": str(raw.get("shot_role") or fallback["shot_role"]).strip(),
+                "shot_role": proposed_role,
                 "visual_purpose": str(raw.get("visual_purpose") or fallback["visual_purpose"]).strip(),
                 "subject": str(raw.get("subject") or fallback["subject"]).strip(),
                 "action": str(raw.get("action") or fallback["action"]).strip(),
@@ -824,6 +1015,8 @@ def direct_scene_briefs(
                 "avoid": str(raw.get("avoid") or fallback["avoid"]).strip(),
             }
         )
+        brief["visual_style_id"] = visual_style_id
+        _sanitize_scene_assets(brief, cover_available=cover_available)
         brief["visual_brief"] = (
             f"全片镜头 {index + 1}/{count}，必须与其他镜头形成独立画面；"
             f"{brief['visual_purpose']}；主体：{brief['subject']}；动作：{brief['action']}；"

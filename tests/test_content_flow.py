@@ -13,8 +13,10 @@ import book_video_workbench.content_flow as content_flow
 from book_video_workbench.content_flow import (
     DEMO_RAW_TRANSCRIPT,
     compliance_findings,
-    identify_book,
     direct_scene_briefs,
+    identify_book,
+    product_asset_warnings,
+    product_is_ready,
     repair_transcript,
     rewrite_candidates,
     score_copy_candidate,
@@ -104,7 +106,31 @@ def test_book_identity_marks_confident_demo_as_ready(tmp_path: Path) -> None:
         output_path=tmp_path / "book.json",
         demo=True,
     )
-    assert '"needs_review": false' in path.read_text(encoding="utf-8")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert value["needs_review"] is False
+    assert len(value["selling_points"]) >= 2
+    assert value["selling_points_source"] == "ai_extracted_from_source"
+
+
+def test_product_ready_requires_title_two_selling_points_and_cover(tmp_path: Path) -> None:
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"fixture")
+
+    assert not product_is_ready(
+        book_title="测试书", selling_points=["一个卖点"], book_cover=str(cover)
+    )
+    assert not product_is_ready(
+        book_title="测试书", selling_points=["卖点一", "卖点二"], book_cover=""
+    )
+    assert product_is_ready(
+        book_title="测试书",
+        selling_points=["卖点一", "卖点二"],
+        book_cover=str(cover),
+    )
+    warnings = product_asset_warnings(
+        book_author="", selling_points=["一个卖点"], book_cover=""
+    )
+    assert len(warnings) == 3
 
 
 def test_tts_segments_and_scene_briefs_cover_long_script() -> None:
@@ -151,7 +177,7 @@ def test_real_repair_uses_article_appendix_a_verbatim(tmp_path: Path, monkeypatc
 def test_real_rewrite_uses_three_distinct_strategies_and_quality_scores(tmp_path: Path, monkeypatch) -> None:
     calls = []
 
-    def fake_chat_json(settings, *, system, user, temperature):
+    def fake_chat_json(settings, *, system, user, temperature, **_request_options):
         assert system == CONTENT_CARD_SYSTEM_PROMPT
         return {
             "core_claim": "漫画版降低古文阅读门槛",
@@ -198,13 +224,14 @@ def test_real_rewrite_uses_three_distinct_strategies_and_quality_scores(tmp_path
 def test_real_book_identity_uses_article_appendix_d(tmp_path: Path, monkeypatch) -> None:
     captured = {}
 
-    def fake_chat_json(settings, *, system, user, temperature):
+    def fake_chat_json(settings, *, system, user, temperature, **_request_options):
         captured.update(system=system, user=user, temperature=temperature)
         return {
             "book_title": "测试书",
             "book_author": "测试作者",
             "confidence": 0.9,
             "evidence": "正文明确提到",
+            "suggested_selling_points": ["从具体案例理解方法", "适合刚入门的读者"],
         }
 
     monkeypatch.setattr(content_flow, "_chat_json", fake_chat_json)
@@ -223,6 +250,10 @@ def test_real_book_identity_uses_article_appendix_d(tmp_path: Path, monkeypatch)
     assert "只能根据已提供资料判断" in captured["user"]
     assert captured["temperature"] == 0.05
     assert value["prompt"]["system"] == BOOK_SYSTEM_PROMPT
+    assert value["suggested_selling_points"] == [
+        "从具体案例理解方法",
+        "适合刚入门的读者",
+    ]
 
 
 def test_visual_director_keeps_briefs_unique_when_model_repeats_shots(
@@ -241,7 +272,7 @@ def test_visual_director_keeps_briefs_unique_when_model_repeats_shots(
         "avoid": "文字和假封面",
     }
 
-    def fake_chat_json(settings, *, system, user, temperature):
+    def fake_chat_json(settings, *, system, user, temperature, **_request_options):
         return {"shots": [repeated.copy() for _ in range(6)]}
 
     monkeypatch.setattr(content_flow, "_chat_json", fake_chat_json)
@@ -258,6 +289,101 @@ def test_visual_director_keeps_briefs_unique_when_model_repeats_shots(
     assert len({item["visual_brief"] for item in briefs}) == 6
     assert briefs[0]["visual_brief"].startswith("全片镜头 1/6")
     assert briefs[-1]["visual_brief"].startswith("全片镜头 6/6")
+
+
+def test_sales_visual_director_forces_product_arc_and_removes_blank_books(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured = {}
+    repeated = {
+        "narration": "同一句口播。",
+        "shot_role": "detail",
+        "visual_purpose": "解释观点",
+        "subject": "一本空白书和白色书封",
+        "action": "翻开空白书页",
+        "location": "安静房间",
+        "framing": "9:16 中景",
+        "lighting": "低饱和自然光",
+        "continuity": "同一空间",
+        "avoid": "文字",
+    }
+
+    def fake_chat_json(settings, *, system, user, temperature, **_request_options):
+        captured.update(system=system, user=user, temperature=temperature)
+        return {"shots": [repeated.copy() for _ in range(12)]}
+
+    monkeypatch.setattr(content_flow, "_chat_json", fake_chat_json)
+    briefs, _ = direct_scene_briefs(
+        "同一句口播。" * 12,
+        count=12,
+        book_title="测试书",
+        book_author="测试作者",
+        selling_points=["卖点一", "卖点二"],
+        cover_available=True,
+        product_ready=True,
+        visual_style_id="book-sales",
+        settings=_settings(tmp_path),
+    )
+
+    assert briefs[0]["shot_role"] == "pattern_interrupt"
+    assert briefs[1]["shot_role"] == "product_reveal"
+    assert briefs[6]["shot_role"] == "product_space"
+    assert briefs[-1]["shot_role"] == "closing"
+    assert all(
+        marker not in f"{brief['subject']} {brief['action']}"
+        for brief in briefs
+        for marker in ("空白书", "空白书页", "白色书")
+    )
+    assert "视觉风格：book-sales" in captured["user"]
+    assert "强转化图书广告" in captured["user"]
+
+
+def test_visual_director_uses_local_fallback_for_large_shot_plan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("large plans must not call the remote visual director")
+
+    monkeypatch.setattr(content_flow, "_chat_json", unexpected)
+    briefs, snapshot = direct_scene_briefs(
+        "第一句。第二句。第三句。",
+        count=35,
+        book_title="测试书",
+        book_author="测试作者",
+        selling_points=["卖点一", "卖点二"],
+        cover_available=True,
+        product_ready=True,
+        visual_style_id="book-sales",
+        settings=_settings(tmp_path),
+    )
+
+    assert len(briefs) == 35
+    assert snapshot["execution_mode"] == "deterministic-local-fallback"
+    assert snapshot["fallback_reason"] == "remote_shot_limit_exceeded"
+
+
+def test_visual_director_timeout_falls_back_without_failing_stage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(content_flow, "_chat_json", timeout)
+    briefs, snapshot = direct_scene_briefs(
+        "第一句。第二句。第三句。第四句。第五句。第六句。",
+        count=6,
+        book_title="测试书",
+        book_author="测试作者",
+        selling_points=["卖点一", "卖点二"],
+        cover_available=True,
+        product_ready=True,
+        visual_style_id="book-sales",
+        settings=_settings(tmp_path),
+    )
+
+    assert len(briefs) == 6
+    assert snapshot["execution_mode"] == "deterministic-local-fallback"
+    assert snapshot["fallback_reason"] == "TimeoutError"
 
 
 def test_copy_quality_rewards_new_structure_and_product_specificity() -> None:

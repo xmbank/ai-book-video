@@ -40,6 +40,19 @@ body,
   background: linear-gradient(100deg, #f7fbfc 0%, #fff 55%, #eef7f5 100%);
 }
 
+.import-notice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -3px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #ead3a9;
+  border-radius: 6px;
+  background: #fff8e9;
+  color: #805819;
+  font-size: 10px;
+}
+
 .import-row textarea,
 .import-row input,
 .import-row select,
@@ -143,6 +156,110 @@ tbody tr:hover {
   gap: 11px;
 }
 
+.book-edit-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.image-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+}
+
+.book-form label small,
+.image-summary span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.cover-upload input[type="file"] {
+  padding: 7px;
+  background: #f8faf9;
+}
+
+.cover-actions {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.8fr) minmax(220px, 1.2fr);
+  align-items: end;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid #c8ded6;
+  border-radius: 7px;
+  background: #f1f8f5;
+}
+
+.cover-actions .primary-btn {
+  align-self: stretch;
+}
+
+.cover-ready {
+  color: var(--teal);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.book-cover-preview {
+  display: block;
+  width: min(100%, 330px);
+  aspect-ratio: 2 / 3;
+  margin: 16px auto 0;
+  object-fit: cover;
+  border: 1px solid #d6d3cb;
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(26, 31, 29, 0.18);
+}
+
+.conversion-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 12px;
+  padding: 11px 12px;
+  border: 1px solid #e8bd82;
+  border-radius: 7px;
+  background: #fff7e7;
+  color: #825719;
+}
+
+.conversion-warning strong {
+  font-size: 11px;
+}
+
+.conversion-warning p {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.selling-point-suggestions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #c8ded6;
+  border-radius: 7px;
+  background: #f1f8f5;
+}
+
+.selling-point-suggestions > div {
+  display: grid;
+  gap: 6px;
+}
+
+.selling-point-suggestions small {
+  color: var(--teal);
+  font-size: 9px;
+}
+
+.selling-point-suggestions span {
+  color: #405d56;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .stage-note {
   padding: 9px 15px;
   border-bottom: 1px solid #dbe3e6;
@@ -220,6 +337,9 @@ tbody tr:hover {
 }
 
 @media (max-width: 760px) {
+  .cover-actions {
+    grid-template-columns: 1fr;
+  }
   .page-title.actions-only {
     align-items: flex-end;
   }
@@ -234,5 +354,16 @@ tbody tr:hover {
 
   .grid-gallery.portrait-contacts {
     grid-template-columns: 1fr;
+  }
+
+  .image-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .hero-actions .primary-btn {
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+    font-size: 0;
   }
 }
