@@ -136,10 +136,8 @@ def generate_project(
         scenes_html.append(
             f'''<section id="{scene_id}" class="clip scene{' product-scene' if product_scene else ''}" data-role="{html.escape(str(scene.get('shot_role') or ''), quote=True)}" data-start="{scene['start']}" data-duration="{scene['duration']}" data-track-index="1" style="--bg:{scene['background']};--accent:{scene['accent']};--fg:{scene['foreground']};--headline-size:{headline_size}px">
   {media}
-  <div class="scene-mark">BOOK / 好书</div>
   <div class="headline{headline_class}">{_headline_html(scene['headline'])}</div>
   {cover}
-  <div class="page-number">{len(scenes_html) + 1:02}</div>
 </section>'''
         )
 
@@ -171,7 +169,6 @@ def generate_project(
     .scene-image {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }}
     .background-video {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }}
     .media-shade {{ position: absolute; inset: 0; background: rgba(10, 12, 15, .6); }}
-    .scene-mark {{ position: absolute; z-index: 4; left: 70px; top: 82px; padding: 11px 18px; background: rgba(0,0,0,.56); font-size: 26px; font-weight: 700; color: white; }}
     .headline {{ position: absolute; z-index: 4; left: 74px; right: 74px; top: 235px; color: white; font-size: var(--headline-size); line-height: 1.18; font-weight: 800; overflow-wrap: anywhere; text-wrap: balance; text-shadow: 0 4px 16px rgba(0,0,0,.72); }}
     .headline-break {{ display: block; }}
     .headline-hidden {{ display: none; }}
@@ -182,8 +179,7 @@ def generate_project(
     .product-copy strong {{ font-size: 48px; line-height: 1.2; color: white; }}
     .selling-point-chips {{ display: flex; flex-direction: column; gap: 14px; }}
     .selling-point-chips span {{ padding: 14px 18px; border-left: 7px solid #ffd25f; border-radius: 8px 18px 18px 8px; background: rgba(255,255,255,.12); font-size: 27px; line-height: 1.3; font-weight: 700; color: white; }}
-    .page-number {{ position: absolute; z-index: 4; right: 70px; top: 88px; font: 700 46px/1 Arial, sans-serif; color: white; text-shadow: 0 3px 10px rgba(0,0,0,.7); }}
-    .caption {{ position: absolute; z-index: 10; left: 62px; right: 62px; bottom: 245px; min-height: 150px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px 30px; font-size: 50px; line-height: 1.34; font-weight: 800; text-shadow: 0 3px 8px rgba(0,0,0,.9); }}
+    .caption {{ position: absolute; z-index: 10; left: 62px; right: 62px; bottom: 245px; min-height: 170px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px 30px; font-size: 58px; line-height: 1.26; font-weight: 800; text-shadow: 0 3px 8px rgba(0,0,0,.9); }}
     .caption span {{ padding: 8px 14px; background: rgba(0,0,0,.36); border-radius: 10px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }}
     .brand {{ position: absolute; z-index: 20; left: 62px; right: 62px; bottom: 122px; font-size: 23px; color: rgba(255,255,255,.9); text-shadow: 0 2px 6px rgba(0,0,0,.75); }}
     .declaration {{ position: absolute; z-index: 20; left: 62px; right: 62px; bottom: 68px; font-size: 18px; color: rgba(255,255,255,.72); }}
@@ -192,14 +188,11 @@ def generate_project(
     body.typewriter-dark .headline {{ top: 420px; font-family: ui-monospace, monospace; font-size: 68px; }}
     body.dark-knowledge .scene::before {{ background: rgba(5,17,24,.52); }}
     body.dark-knowledge .headline {{ padding: 32px; background: rgba(5,12,16,.72); border-left: 12px solid #74c9bd; }}
-    body.book-broadcast .scene-mark {{ background: #111; color: #f3cb43; }}
     body.book-broadcast .headline {{ top: 185px; padding: 22px 26px; background: rgba(0,0,0,.72); font-size: 66px; }}
-    body.book-sales .scene-mark {{ background: #f2c94c; color: #171717; }}
     body.book-sales .scene::before {{ background: linear-gradient(180deg, rgba(0,0,0,.16), rgba(0,0,0,0) 38%); }}
     body.book-sales .scene-image {{ filter: saturate(1.12) contrast(1.06); }}
     body.book-sales .headline {{ top: 185px; max-width: 900px; padding: 22px 28px; border-left: 12px solid #f2c94c; background: linear-gradient(90deg, rgba(0,0,0,.76), rgba(0,0,0,.18)); font-size: 64px; }}
     body.book-sales .product-scene .headline {{ top: 185px; right: 240px; }}
-    body.book-sales .caption {{ font-size: 48px; }}
     body.book-sales .caption span {{ background: rgba(0,0,0,.28); text-shadow: 0 3px 10px rgba(0,0,0,.95), 0 0 2px #000; }}
   </style>
 </head>

@@ -100,3 +100,7 @@ def test_sales_renderer_builds_product_hero_and_only_animates_existing_cards(
     assert 'timeline.fromTo("#scene-3 .product-stage"' in html
     assert "linear-gradient(180deg, rgba(5,7,9,0)" in html
     assert "<br>" not in html
+    assert 'class="scene-mark"' not in html
+    assert 'class="page-number"' not in html
+    assert ".caption { position: absolute;" in html
+    assert "font-size: 58px; line-height: 1.26" in html
