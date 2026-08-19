@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-book-video-workbench"
 version = "0.1.0"
-description = "P0 vertical slice for a Douyin-to-captioned-video workbench"
+description = "Local workbench for producing book-selling short videos"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 media = ["faster-whisper>=1.0.3,<2"]
-dev = ["httpx>=0.27,<1", "pytest>=8,<9"]
+dev = ["httpx>=0.27,<1"]
 
 [project.scripts]
 book-video = "book_video_workbench.cli:main"
@@ -27,6 +27,3 @@ book-video-web = "book_video_workbench.web:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/book_video_workbench"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

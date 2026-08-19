@@ -3,6 +3,7 @@
 !.env.example
 .venv/
 node_modules/
+tests/
 data/
 dist/
 logs/

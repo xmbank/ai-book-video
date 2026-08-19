@@ -86,17 +86,6 @@ uv run book-video run \
   --scene-count 0
 ```
 
-## Publish To GitHub
-
-Recommended approach: keep the current enterprise remote and add a separate GitHub remote.
-
-```bash
-git remote add github git@github.com:<your-name>/ai-book-video.git
-git push -u github master
-```
-
-Before making the repository public, run `git status` again and confirm that `.env`, logs, data folders, and any other local private files are absent from the index.
-
 ## Task Persistence
 
 ```text
@@ -120,15 +109,14 @@ data/tasks/{task-id}/
 
 Old versions are preserved instead of overwritten. Editing upstream artifacts only marks downstream stages as stale and ready to rerun.
 
-## Development Validation
+## Development
 
 ```bash
-uv run python -m compileall -q src tests
-uv run pytest -q
+uv run python -m compileall -q src
 npm run build
 ```
 
-Backend tests cover product gating, selling points, sales-focused storyboard generation, image QA and regeneration, cover upload, style invalidation, hero card rendering, and shared error handling.
+Frontend production assets are emitted to `dist/`.
 
 ## Out Of Scope
 
@@ -136,7 +124,6 @@ This repository does not currently include:
 
 - automatic Douyin trending-page crawling with account login,
 - automatic publishing to Douyin or WeChat Channels,
-- commission attribution,
 - multi-user permission management.
 
 The first version still expects humans to judge which source links are worth turning into tasks. The system focuses on making downstream production reproducible and auditable.
