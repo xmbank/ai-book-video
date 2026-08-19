@@ -1,8 +1,15 @@
 .env
+.env.*
+!.env.example
 .venv/
 node_modules/
 data/
 dist/
+logs/
+*.log
 *.pyc
 __pycache__/
-
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/

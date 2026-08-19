@@ -1,5 +1,7 @@
 # AI 图书带货视频生产系统
 
+[English](./README.en.md) | 简体中文
+
 这是按《加入生财不到一年，我的视频号图书带货 23 天 5 万佣金的复盘》中展示的生产方法实现的本地 Web 工作台。它不是网页版剪映，也不是通用视频任务面板；首页是热点采集表，一条素材进入任务后，所有逐字稿、候选稿、音频、字幕、场景图、书籍信息和成片都归档在同一任务下，可查看、修改、保留版本和局部重跑。
 
 当前本机已经用离线任务跑通八个阶段，并生成两种风格的 1080×1920 H.264/AAC 成片。新任务把“ASR 校对”和“吸引力二创”彻底分开，并在写稿前确认真实图书与商品卖点；真实抖音任务还需要在页面设置中配置 LLM、图片生成和火山 TTS 凭证。
@@ -29,7 +31,7 @@
 ## 启动工作台
 
 ```bash
-cd /Users/CC/experiment/202607/ai-book-video-workbench
+cd /path/to/ai-book-video
 ./start.sh
 ```
 
@@ -81,6 +83,8 @@ cp .env.example .env
 uv run book-video doctor
 ```
 
+`.env`、`logs/`、`data/` 和其他本地运行产物默认不会进入 Git。开源发布时只保留 `.env.example` 作为配置模板，不要把真实的 `API Key`、`Base URL`、Cookie 或本机绝对路径写进仓库。
+
 必须配置：
 
 - `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL`：OpenAI-compatible Chat Completions，用于 ASR 校对、内容卡、三策略二创、书籍识别和视觉导演。
@@ -101,6 +105,26 @@ uv run book-video run \
 `--scene-count 0` 表示按最终音频时长自动计算；也可以手动填写 6–63。`--book-cover` 和可重复的 `--selling-point` 仍可用于覆盖自动结果，但不再是必填项。
 
 首次真实验收需要一条实际图书视频链接和可用的三类 Provider 凭证。抖音页面结构、账号权限和图片模型支持的尺寸可能变化，失败会记录在对应阶段并允许从该阶段重跑。
+
+## 发布到 GitHub
+
+建议保留现有企业仓库远程，并额外添加一个 GitHub 远程，例如：
+
+```bash
+git remote rename origin codeup
+git remote add origin git@github.com:<your-name>/ai-book-video.git
+git push -u origin master
+git push codeup master
+```
+
+如果你不想调整 `origin`，也可以直接新增 `github` 远程：
+
+```bash
+git remote add github git@github.com:<your-name>/ai-book-video.git
+git push -u github master
+```
+
+公开仓库前，先再次确认 `git status` 里没有 `.env`、日志、数据目录或其他本地私有文件。
 
 ## 任务持久化
 

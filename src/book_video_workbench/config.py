@@ -6,10 +6,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CAPTURE_BACKEND = Path(
-    "/Users/qiulianglong/Documents/cc的文档/自媒体内容工厂/_系统/tools/"
-    "obsidian-content-capture-backend"
-)
+DEFAULT_CAPTURE_BACKEND = PROJECT_ROOT / "external" / "obsidian-content-capture-backend"
+DEFAULT_REFERENCE_DEMO_VIDEO = PROJECT_ROOT / "assets" / "reference-demo.mp4"
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -93,9 +91,6 @@ class Settings:
             ),
             reference_demo_video=_path_from_env(
                 "REFERENCE_DEMO_VIDEO",
-                Path(
-                    "/Users/qiulianglong/Documents/cc的文档/01 AI+产业/00 项目机会/"
-                    "assets/video-01-成片演示.mp4"
-                ),
+                DEFAULT_REFERENCE_DEMO_VIDEO,
             ),
         )
