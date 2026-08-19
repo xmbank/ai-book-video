@@ -23,7 +23,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "pytest" },
 ]
 media = [
     { name = "faster-whisper" },
@@ -36,7 +35,6 @@ requires-dist = [
     { name = "faster-whisper", marker = "extra == 'media'", specifier = ">=1.0.3,<2" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
     { name = "pillow", specifier = ">=11,<13" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<9" },
     { name = "requests", specifier = ">=2.31.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
     { name = "zhconv", specifier = ">=1.4.3,<2" },
